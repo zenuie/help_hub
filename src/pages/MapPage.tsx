@@ -9,6 +9,7 @@ type TaskLinkedRichMarker = BaseMarker & { linkedTaskId?: string }
 type RichMarker = TaskLinkedRichMarker // 地圖資料現在使用這個擴充型別
 
 // 修正 LocationTask：包含所有需要的欄位 (Task 基礎 + 地理資訊 + 描述)
+// 描述欄位被加入，以確保與 NeedForm.tsx 傳入的任務結構兼容。
 type LocationTask = Task & {
   lat: number;
   lng: number;
@@ -114,122 +115,6 @@ export default function MapPage() {
   })
   useEffect(() => { localStorage.setItem(CUSTOM_PLACES_KEY, JSON.stringify(customPlaces)) }, [customPlaces])
 
-  // 工具與樣式 (移至頂部，因為它們是純函數)
-  function toBBox(b: any): BBox {
-    const minLat = Number(b[0]), maxLat = Number(b[1]), minLng = Number(b[2]), maxLng = Number(b[3])
-    return { minLng, minLat, maxLng, maxLat }
-  }
-  function normalize(s?: string) { return (s || '').trim() }
-  function formatAdmin(city?: string, district?: string) {
-    return `${city || ''}${district ? ' ' + district : ''}`.trim() || '未知地區'
-  }
-  function formatCoord(lat: number, lng: number) {
-    return `${lat.toFixed(5)}, ${lng.toFixed(5)}`
-  }
-  // 背景反地理編碼 (優化：提取並格式化完整地址)
-  async function reverseGeocodeAdmin(lat: number, lng: number): Promise<{ city?: string; district?: string; place?: string; fullAddress?: string } | undefined> {
-    try {
-      const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1` // 提高 zoom 獲取更詳細地址
-      const res = await fetch(url, { headers: { 'Accept-Language': 'zh-TW' } })
-      if (!res.ok) return undefined
-      const data = await res.json()
-      const a = data?.address || {}
-
-      // 定義優先級，越高級的行政區越靠前
-      const city = a.city || a.county || a.state // 縣市 (最高級別)
-      const district = a.city_district || a.district || a.suburb || a.town || a.village // 區鄉鎮
-      const neighbourhood = a.neighbourhood // 社區/鄰里
-      const road = a.road // 路名
-      const houseNumber = a.house_number // 號碼
-
-      // 構建完整地址：[縣市] [區鄉鎮] [鄰里/社區] [路名] [號碼]
-      const addressParts = [city, district, neighbourhood, road, houseNumber].filter(Boolean)
-      const fullAddress = addressParts.join('') === '' ? undefined : addressParts.join('')
-
-      // 構建一般地點描述：[縣市] [區鄉鎮] [路名]
-      const place = [city, district, road].filter(Boolean).join(' ')
-
-      return {
-        city,
-        district,
-        place,
-        fullAddress // 完整地址 (例: 花蓮縣光復鄉中山路88號)
-      }
-    } catch {
-      return undefined
-    }
-  }
-
-  // 列表效能優化：以狀態版本觸發最小重繪，列表資料用 memo 計算
-  const [listVersion, setListVersion] = useState(0)
-  function bumpListVersion() { setListVersion(v => v + 1) }
-
-  // 核心邏輯函數：將與地圖狀態/數據庫交互的函數放在這裡
-  const shouldShow = React.useCallback((m: RichMarker, cached?: { city?: string; district?: string }, bbox?: BBox | null, city?: string, district?: string) => {
-    let inBox = true
-    if (bbox) {
-      inBox = m.lng >= bbox.minLng && m.lng <= bbox.maxLng && m.lat >= bbox.minLat && m.lat <= bbox.maxLat
-    }
-    let matchAdmin = true
-    if (city || district) {
-      matchAdmin =
-        (!city || normalize(cached?.city) === city) &&
-        (!district || normalize(cached?.district) === district)
-    }
-    return inBox && matchAdmin
-  }, []) // 這是純函數，無需依賴
-
-  const applyVisibilityByFilterEntry = React.useCallback((id: string) => {
-    const entry = markerIndexRef.current.get(id)
-    if (!entry) return
-    const bbox = selectedPlace?.bbox
-    const city = normalize(selectedPlace?.city)
-    const district = normalize(selectedPlace?.district)
-    const cached = placeCache.get(id)
-    const show = shouldShow(entry.data, cached, bbox, city, district)
-    entry.obj.getElement().style.display = show ? '' : 'none'
-  }, [selectedPlace, shouldShow]) // 依賴 selectedPlace, shouldShow
-
-  const createMarkerOnMap = React.useCallback((m: RichMarker) => {
-    const map = mapRef.current
-    if (!map) return
-    const el = document.createElement('div')
-    const zhLabel = enToZh[m.type]
-    el.style.width = '22px'
-    el.style.height = '22px'
-    el.style.borderRadius = '50%'
-    el.style.border = '2px solid #fff'
-    el.style.boxShadow = '0 1px 6px rgba(0,0,0,0.3)'
-    el.style.background = zhColor[zhLabel] || '#6b7280'
-    const cached = placeCache.get(m.id!)
-    el.title = `${cached?.fullAddress || formatAdmin(cached?.city, cached?.district)} ／ ${zhLabel}（${formatCoord(m.lat, m.lng)}）`
-
-    const markerObj = new maplibregl.Marker({ element: el }).setLngLat([m.lng, m.lat]).addTo(map)
-    markerIndexRef.current.set(m.id!, { data: m, obj: markerObj })
-    applyVisibilityByFilterEntry(m.id!)
-  }, [applyVisibilityByFilterEntry]) // 依賴 applyVisibilityByFilterEntry
-
-  const addMarkerFast = React.useCallback(async (typeZh: string, lat: number, lng: number) => {
-    const typeEn: MarkerType = zhToEn[typeZh] ?? 'block'
-    const id = crypto.randomUUID()
-    const m: RichMarker = { id, type: typeEn, lat, lng, updatedAt: Date.now(), linkedTaskId: undefined }
-    createMarkerOnMap(m)
-    await db.markers.put(m as BaseMarker)
-
-    reverseGeocodeAdmin(lat, lng).then(info => {
-      if (!info) return
-      placeCache.set(id, { city: info.city, district: info.district, place: info.place, fullAddress: info.fullAddress })
-      const entry = markerIndexRef.current.get(id)
-      if (entry) {
-        const zhLabel = enToZh[entry.data.type]
-        entry.obj.getElement().title = `${info.fullAddress || formatAdmin(info.city, info.district)} ／ ${zhLabel}（${formatCoord(lat, lng)}）`
-      }
-      applyVisibilityByFilterEntry(id)
-      bumpListVersion()
-    }).catch(()=>{})
-  }, [createMarkerOnMap, applyVisibilityByFilterEntry]) // 依賴 createMarkerOnMap, applyVisibilityByFilterEntry
-
-
   // 初始化地圖＋自動導航到上次區域
   useEffect(() => {
     const map = new maplibregl.Map({
@@ -254,13 +139,14 @@ export default function MapPage() {
 
     // 載入既有標註（增量建立，不重繪）
     ;(async () => {
+      // 讀取時斷言為擴充型別 RichMarker (TaskLinkedRichMarker)
       const list = await db.markers.toArray() as RichMarker[]
       list.forEach(m => createMarkerOnMap(m))
       // 自動導航到上次區域（若存在）
       const last = getLastPlace()
       if (last) {
         setSelectedPlace(last)
-        // applyPlace(last) // applyPlace 會調用 applyVisibilityByFilter，而它依賴 applyVisibilityByFilterEntry (已加入依賴樹)
+        applyPlace(last)
       }
     })()
 
@@ -271,18 +157,74 @@ export default function MapPage() {
     }
     map.on('click', clickHandler)
 
-    // 修復警告: Line 162: The ref value 'markerIndexRef.current' will likely have changed...
-    const currentMarkerIndex = markerIndexRef.current;
     return () => {
       map.off('click', clickHandler)
-      for (const entry of currentMarkerIndex.values()) entry.obj.remove()
-      currentMarkerIndex.clear()
+      for (const entry of markerIndexRef.current.values()) entry.obj.remove()
+      markerIndexRef.current.clear()
       map.remove()
     }
-  // 修復警告: Line 166: React Hook useEffect has missing dependencies: 'addMarkerFast', 'applyPlace', and 'createMarkerOnMap'
-  // 忽略此處的警告，因為我們知道這是初始化 Hook，且我們使用 useCallback 來最小化 Hook 的運行次數
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [addMarkerFast, createMarkerOnMap])
+  }, [])
+
+  // 立即新增：先畫點與寫 DB，再背景補查地名（placeCache），最後增量更新 title 與可見性
+  async function addMarkerFast(typeZh: string, lat: number, lng: number) {
+    const typeEn: MarkerType = zhToEn[typeZh] ?? 'block'
+    const id = crypto.randomUUID()
+    // 初始化時，linkedTaskId 預設為 undefined
+    const m: RichMarker = {
+      id,
+      type: typeEn,
+      lat,
+      lng,
+      updatedAt: Date.now(),
+      linkedTaskId: undefined // 新增欄位
+    }
+    createMarkerOnMap(m)
+    await db.markers.put(m as BaseMarker) // 寫入 DB 時斷言回 BaseMarker
+
+    // 背景補地名
+    reverseGeocodeAdmin(lat, lng).then(info => {
+      if (!info) return
+      // 將 fullAddress 儲存到 placeCache
+      placeCache.set(id, {
+        city: info.city,
+        district: info.district,
+        place: info.place,
+        fullAddress: info.fullAddress // 新增
+      })
+      const entry = markerIndexRef.current.get(id)
+      if (entry) {
+        const zhLabel = enToZh[entry.data.type]
+        // 標註的 title 顯示詳細地址
+        entry.obj.getElement().title =
+          `${info.fullAddress || formatAdmin(info.city, info.district)} ／ ${zhLabel}（${formatCoord(lat, lng)}）`
+      }
+      // 視覺增量更新：可見性
+      applyVisibilityByFilterEntry(id)
+      // 列表更新：改用狀態標記觸發最小重繪
+      bumpListVersion()
+    }).catch(()=>{})
+  }
+
+  // 建立地圖標註（單筆）
+  function createMarkerOnMap(m: RichMarker) {
+    const map = mapRef.current
+    if (!map) return
+    const el = document.createElement('div')
+    const zhLabel = enToZh[m.type]
+    el.style.width = '22px'
+    el.style.height = '22px'
+    el.style.borderRadius = '50%'
+    el.style.border = '2px solid #fff'
+    el.style.boxShadow = '0 1px 6px rgba(0,0,0,0.3)'
+    el.style.background = zhColor[zhLabel] || '#6b7280'
+    const cached = placeCache.get(m.id!)
+    // 使用 fullAddress 提升 title 資訊量
+    el.title = `${cached?.fullAddress || formatAdmin(cached?.city, cached?.district)} ／ ${zhLabel}（${formatCoord(m.lat, m.lng)}）`
+
+    const markerObj = new maplibregl.Marker({ element: el }).setLngLat([m.lng, m.lat]).addTo(map)
+    markerIndexRef.current.set(m.id!, { data: m, obj: markerObj })
+    applyVisibilityByFilterEntry(m.id!)
+  }
 
   async function removeMarker(id: string) {
     const entry = markerIndexRef.current.get(id)
@@ -367,6 +309,29 @@ export default function MapPage() {
       entry.obj.getElement().style.display = show ? '' : 'none'
     }
     bumpListVersion()
+  }
+  function applyVisibilityByFilterEntry(id: string) {
+    const entry = markerIndexRef.current.get(id)
+    if (!entry) return
+    const bbox = selectedPlace?.bbox
+    const city = normalize(selectedPlace?.city)
+    const district = normalize(selectedPlace?.district)
+    const cached = placeCache.get(id)
+    const show = shouldShow(entry.data, cached, bbox, city, district)
+    entry.obj.getElement().style.display = show ? '' : 'none'
+  }
+  function shouldShow(m: RichMarker, cached?: { city?: string; district?: string }, bbox?: BBox | null, city?: string, district?: string) {
+    let inBox = true
+    if (bbox) {
+      inBox = m.lng >= bbox.minLng && m.lng <= bbox.maxLng && m.lat >= bbox.minLat && m.lat <= bbox.maxLat
+    }
+    let matchAdmin = true
+    if (city || district) {
+      matchAdmin =
+        (!city || normalize(cached?.city) === city) &&
+        (!district || normalize(cached?.district) === district)
+    }
+    return inBox && matchAdmin
   }
 
   // 搜尋（結果點選：導航＋詢問加入常用）
@@ -458,13 +423,44 @@ export default function MapPage() {
     }
   }
 
+  // 背景反地理編碼 (優化：提取並格式化完整地址)
+  async function reverseGeocodeAdmin(lat: number, lng: number): Promise<{ city?: string; district?: string; place?: string; fullAddress?: string } | undefined> {
+    try {
+      const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1` // 提高 zoom 獲取更詳細地址
+      const res = await fetch(url, { headers: { 'Accept-Language': 'zh-TW' } })
+      if (!res.ok) return undefined
+      const data = await res.json()
+      const a = data?.address || {}
+
+      // 定義優先級，越高級的行政區越靠前
+      const city = a.city || a.county || a.state // 縣市 (最高級別)
+      const district = a.city_district || a.district || a.suburb || a.town || a.village // 區鄉鎮
+      const neighbourhood = a.neighbourhood // 社區/鄰里
+      const road = a.road // 路名
+      const houseNumber = a.house_number // 號碼
+
+      // 構建完整地址：[縣市] [區鄉鎮] [鄰里/社區] [路名] [號碼]
+      const addressParts = [city, district, neighbourhood, road, houseNumber].filter(Boolean)
+      const fullAddress = addressParts.join('') === '' ? undefined : addressParts.join('')
+
+      // 構建一般地點描述：[縣市] [區鄉鎮] [路名]
+      const place = [city, district, road].filter(Boolean).join(' ')
+
+      return {
+        city,
+        district,
+        place,
+        fullAddress // 完整地址 (例: 花蓮縣光復鄉中山路88號)
+      }
+    } catch {
+      return undefined
+    }
+  }
 
   // 列表效能優化：以狀態版本觸發最小重繪，列表資料用 memo 計算
+  const [listVersion, setListVersion] = useState(0)
+  function bumpListVersion() { setListVersion(v => v + 1) }
   const visibleEntries = useMemo(() => {
-    // 解決 'listVersion' is unnecessary 的錯誤
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const trigger = listVersion;
-
     // 僅取目前可見的標註（元素 display !== none），避免大量計算
     const arr: MarkerEntry[] = []
     for (const entry of markerIndexRef.current.values()) {
@@ -475,9 +471,21 @@ export default function MapPage() {
     // 依更新時間排序，較新的在前
     arr.sort((a, b) => (b.data.updatedAt ?? 0) - (a.data.updatedAt ?? 0))
     return arr
-    // 修正錯誤：保留 listVersion 依賴
+    // 依 listVersion 觸發重算
   }, [listVersion])
 
+  // 工具與樣式
+  function toBBox(b: any): BBox {
+    const minLat = Number(b[0]), maxLat = Number(b[1]), minLng = Number(b[2]), maxLng = Number(b[3])
+    return { minLng, minLat, maxLng, maxLat }
+  }
+  function normalize(s?: string) { return (s || '').trim() }
+  function formatAdmin(city?: string, district?: string) {
+    return `${city || ''}${district ? ' ' + district : ''}`.trim() || '未知地區'
+  }
+  function formatCoord(lat: number, lng: number) {
+    return `${lat.toFixed(5)}, ${lng.toFixed(5)}`
+  }
 
   const headerStyle: React.CSSProperties = {
     display: 'flex', gap: 8, padding: 8, alignItems: 'center', overflowX: 'auto', whiteSpace: 'nowrap'
