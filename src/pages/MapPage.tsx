@@ -157,12 +157,14 @@ export default function MapPage() {
     }
     map.on('click', clickHandler)
 
+    const markerIndex = markerIndexRef.current
     return () => {
       map.off('click', clickHandler)
-      for (const entry of markerIndexRef.current.values()) entry.obj.remove()
-      markerIndexRef.current.clear()
+      for (const entry of markerIndex.values()) entry.obj.remove()
+      markerIndex.clear()
       map.remove()
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // 立即新增：先畫點與寫 DB，再背景補查地名（placeCache），最後增量更新 title 與可見性
@@ -472,6 +474,7 @@ export default function MapPage() {
     arr.sort((a, b) => (b.data.updatedAt ?? 0) - (a.data.updatedAt ?? 0))
     return arr
     // 依 listVersion 觸發重算
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [listVersion])
 
   // 工具與樣式
