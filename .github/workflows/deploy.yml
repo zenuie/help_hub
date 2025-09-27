@@ -1,36 +1,42 @@
+# .github/workflows/deploy.yml
+
 name: Deploy to GitHub Pages
 
 on:
   push:
     branches:
-      - main # 只有推送到 main 分支時才觸發
+      - main # Or whichever branch you use for development
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    
+    # Add this permissions block
+    permissions:
+      contents: write # This is required to push to the gh-pages branch
+
     steps:
-      # 1. 檢出程式碼
-      - name: Checkout
+      - name: Checkout 🛎️
         uses: actions/checkout@v3
 
-      # 2. 設置 Node.js 環境
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: '20'
-          cache: 'npm' # 關鍵！使用 npm 緩存
+          node-version: '18' # Or your project's node version
+          cache: 'npm'
 
-      # 3. 安裝依賴
-      - name: Install dependencies
+      - name: Install Dependencies 🔧
         run: npm install
 
-      # 4. 建構應用程式 (使用您的 build script)
-      - name: Build
+      - name: Build 🏗️
         run: npm run build
 
-      # 5. 部署到 GitHub Pages (使用一個通用的 action)
-      - name: Deploy
+      - name: Deploy 🚀
         uses: peaceiris/actions-gh-pages@v3
         with:
-          publish_dir: ./build # <--- 替換成您的建構目錄 (例如: ./dist 或 ./build)
-          publish_branch: gh-pages # 部署到 gh-pages 分支
+          # This setting is no longer needed if you set the permissions above
+          # personal_token: ${{ secrets.ACCESS_TOKEN }} 
+          
+          # The GITHUB_TOKEN is automatically used by the action
+          # when the permissions are set correctly.
+          publish_dir: ./build
