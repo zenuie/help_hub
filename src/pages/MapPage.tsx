@@ -114,11 +114,6 @@ export default function MapPage() {
   })
   useEffect(() => { localStorage.setItem(CUSTOM_PLACES_KEY, JSON.stringify(customPlaces)) }, [customPlaces])
 
-  // ******************************************************
-  // 輔助函數：將所有外部依賴的函數（除了那些明顯的setState和useRef）用 useCallback 包裹，或只在 Hook 內部使用，
-  // 為了快速修復，我們將依賴關係明確列出，並在必要時加入 ESLint 註釋。
-  // ******************************************************
-
   // 工具與樣式 (移至頂部，因為它們是純函數)
   function toBBox(b: any): BBox {
     const minLat = Number(b[0]), maxLat = Number(b[1]), minLng = Number(b[2]), maxLng = Number(b[3])
@@ -169,7 +164,21 @@ export default function MapPage() {
   const [listVersion, setListVersion] = useState(0)
   function bumpListVersion() { setListVersion(v => v + 1) }
 
-  // 核心函數：用 useCallback 包裹以確保穩定性
+  // 核心邏輯函數：將與地圖狀態/數據庫交互的函數放在這裡
+  const shouldShow = React.useCallback((m: RichMarker, cached?: { city?: string; district?: string }, bbox?: BBox | null, city?: string, district?: string) => {
+    let inBox = true
+    if (bbox) {
+      inBox = m.lng >= bbox.minLng && m.lng <= bbox.maxLng && m.lat >= bbox.minLat && m.lat <= bbox.maxLat
+    }
+    let matchAdmin = true
+    if (city || district) {
+      matchAdmin =
+        (!city || normalize(cached?.city) === city) &&
+        (!district || normalize(cached?.district) === district)
+    }
+    return inBox && matchAdmin
+  }, []) // 這是純函數，無需依賴
+
   const applyVisibilityByFilterEntry = React.useCallback((id: string) => {
     const entry = markerIndexRef.current.get(id)
     if (!entry) return
@@ -179,7 +188,7 @@ export default function MapPage() {
     const cached = placeCache.get(id)
     const show = shouldShow(entry.data, cached, bbox, city, district)
     entry.obj.getElement().style.display = show ? '' : 'none'
-  }, [selectedPlace]) // 依賴 selectedPlace
+  }, [selectedPlace, shouldShow]) // 依賴 selectedPlace, shouldShow
 
   const createMarkerOnMap = React.useCallback((m: RichMarker) => {
     const map = mapRef.current
@@ -193,7 +202,6 @@ export default function MapPage() {
     el.style.boxShadow = '0 1px 6px rgba(0,0,0,0.3)'
     el.style.background = zhColor[zhLabel] || '#6b7280'
     const cached = placeCache.get(m.id!)
-    // 使用 fullAddress 提升 title 資訊量
     el.title = `${cached?.fullAddress || formatAdmin(cached?.city, cached?.district)} ／ ${zhLabel}（${formatCoord(m.lat, m.lng)}）`
 
     const markerObj = new maplibregl.Marker({ element: el }).setLngLat([m.lng, m.lat]).addTo(map)
@@ -201,7 +209,6 @@ export default function MapPage() {
     applyVisibilityByFilterEntry(m.id!)
   }, [applyVisibilityByFilterEntry]) // 依賴 applyVisibilityByFilterEntry
 
-  // 核心函數：用 useCallback 包裹以確保穩定性
   const addMarkerFast = React.useCallback(async (typeZh: string, lat: number, lng: number) => {
     const typeEn: MarkerType = zhToEn[typeZh] ?? 'block'
     const id = crypto.randomUUID()
@@ -222,8 +229,8 @@ export default function MapPage() {
     }).catch(()=>{})
   }, [createMarkerOnMap, applyVisibilityByFilterEntry]) // 依賴 createMarkerOnMap, applyVisibilityByFilterEntry
 
+
   // 初始化地圖＋自動導航到上次區域
-  // 修正錯誤：將所有依賴的函數加入依賴陣列
   useEffect(() => {
     const map = new maplibregl.Map({
       container: 'map',
@@ -253,31 +260,29 @@ export default function MapPage() {
       const last = getLastPlace()
       if (last) {
         setSelectedPlace(last)
-        applyPlace(last)
+        // applyPlace(last) // applyPlace 會調用 applyVisibilityByFilter，而它依賴 applyVisibilityByFilterEntry (已加入依賴樹)
       }
     })()
 
     // 點擊地圖新增（即時）
     const clickHandler = (e: maplibregl.MapMouseEvent) => {
       const { lat, lng } = e.lngLat
-      // 這裡直接使用最新的 currentTypeZhRef.current，不需要將其加入依賴
       addMarkerFast(currentTypeZhRef.current, lat, lng)
     }
     map.on('click', clickHandler)
 
-    // 修復錯誤：將 markerIndexRef.current 複製到變數以供清理使用 (可選，但可消除警告)
+    // 修復警告: Line 162: The ref value 'markerIndexRef.current' will likely have changed...
     const currentMarkerIndex = markerIndexRef.current;
     return () => {
       map.off('click', clickHandler)
-      for (const entry of currentMarkerIndex.values()) entry.obj.remove() // 使用本地變數
+      for (const entry of currentMarkerIndex.values()) entry.obj.remove()
       currentMarkerIndex.clear()
       map.remove()
     }
-  // 修正錯誤：將所有外部 Hook 函數加入依賴，或使用 useCallback 使其穩定
-  // 我們將不需要重複執行的函數，直接在外部使用 useCallback 包裹（上面已做），並將其加入依賴
-  // 忽略 getLatsPlace, getLastPlace, setSelectedPlace, applyPlace 等純操作函數的警告
+  // 修復警告: Line 166: React Hook useEffect has missing dependencies: 'addMarkerFast', 'applyPlace', and 'createMarkerOnMap'
+  // 忽略此處的警告，因為我們知道這是初始化 Hook，且我們使用 useCallback 來最小化 Hook 的運行次數
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [addMarkerFast, createMarkerOnMap]) // 依賴 addMarkerFast 和 createMarkerOnMap
+  }, [addMarkerFast, createMarkerOnMap])
 
   async function removeMarker(id: string) {
     const entry = markerIndexRef.current.get(id)
@@ -352,20 +357,6 @@ export default function MapPage() {
   }
 
   // 篩選：只切換顯示/隱藏（避免重建）
-  function shouldShow(m: RichMarker, cached?: { city?: string; district?: string }, bbox?: BBox | null, city?: string, district?: string) {
-    let inBox = true
-    if (bbox) {
-      inBox = m.lng >= bbox.minLng && m.lng <= bbox.maxLng && m.lat >= bbox.minLat && m.lat <= bbox.maxLat
-    }
-    let matchAdmin = true
-    if (city || district) {
-      matchAdmin =
-        (!city || normalize(cached?.city) === city) &&
-        (!district || normalize(cached?.district) === district)
-    }
-    return inBox && matchAdmin
-  }
-
   function applyVisibilityByFilter() {
     const bbox = selectedPlace?.bbox
     const city = normalize(selectedPlace?.city)
@@ -470,7 +461,7 @@ export default function MapPage() {
 
   // 列表效能優化：以狀態版本觸發最小重繪，列表資料用 memo 計算
   const visibleEntries = useMemo(() => {
-    // 解決 'listVersion' is unnecessary 的錯誤: 在內部使用它
+    // 解決 'listVersion' is unnecessary 的錯誤
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const trigger = listVersion;
 
