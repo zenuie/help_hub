@@ -1,0 +1,37 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main # 只有推送到 main 分支時才觸發
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. 檢出程式碼
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      # 2. 設置 Node.js 環境
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+          cache: 'npm' # 關鍵！使用 npm 緩存
+
+      # 3. 安裝依賴
+      - name: Install dependencies
+        run: npm install
+
+      # 4. 建構應用程式 (使用您的 build script)
+      - name: Build
+        run: npm run build
+
+      # 5. 部署到 GitHub Pages (使用一個通用的 action)
+      - name: Deploy
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./build # <--- 替換成您的建構目錄 (例如: ./dist 或 ./build)
+          publish_branch: gh-pages # 部署到 gh-pages 分支
