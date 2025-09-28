@@ -1,0 +1,52 @@
+/* src/components/Nav.css */
+
+/* 導覽列容器 */
+.app-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between; /* 讓標題和連結分開 */
+  padding: 12px 24px;
+  background-color: #ffffff;
+  border-bottom: 1px solid #e5e7eb;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05); /* 細緻的底部陰影 */
+}
+
+/* 應用程式標題 */
+.nav-title {
+  font-size: 1.25rem; /* 20px */
+  font-weight: 700;
+  color: #111827; /* 深灰色，比純黑柔和 */
+}
+
+/* 連結的容器 */
+.nav-links {
+  display: flex;
+  gap: 16px; /* 連結之間的間距 */
+}
+
+/* 所有連結的基礎樣式 */
+.nav-link {
+  text-decoration: none;
+  font-size: 1rem; /* 16px */
+  font-weight: 500;
+  color: #4B5563; /* 中度灰色 */
+  padding: 8px 12px;
+  border-radius: 6px;
+  /* 預留底部邊框空間，避免啟用時跳動 */
+  border-bottom: 3px solid transparent;
+  /* 平滑的過渡效果 */
+  transition: all 0.2s ease-in-out;
+}
+
+/* 滑鼠懸停在連結上時的樣式 */
+.nav-link:hover {
+  background-color: #f3f4f6; /* 淡灰色背景 */
+  color: #111827; /* 變深的文字顏色 */
+}
+
+/* 當前啟用連結的樣式 */
+.nav-link.active {
+  color: #0ea5e9; /* 使用您地圖標註的藍色，保持一致性 */
+  font-weight: 700;
+  border-bottom-color: #0ea5e9; /* 高亮底線 */
+}

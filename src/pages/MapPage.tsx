@@ -1,541 +1,487 @@
 // src/pages/MapPage.tsx
-import React, { useEffect, useMemo, useRef, useState } from 'react'
-import maplibregl from 'maplibre-gl'
-import 'maplibre-gl/dist/maplibre-gl.css'
-import { db, type Marker as BaseMarker, type MarkerType, type Task } from '../lib/db'
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import maplibregl, { LngLatLike } from 'maplibre-gl';
+import 'maplibre-gl/dist/maplibre-gl.css';
 
-// 為了支援任務聯動，擴充 Marker 和 Task 型別
-type TaskLinkedRichMarker = BaseMarker & { linkedTaskId?: string }
-type RichMarker = TaskLinkedRichMarker // 地圖資料現在使用這個擴充型別
+import {
+  subscribeToMarkers,
+  deleteMarker,
+  updateMarker,
+  createReport,
+  addTask,
+  FirestoreMarker
+} from '../services/dataSync';
+import { useAuth } from '../contexts/AuthContext';
+import { Task, TaskStatus, MarkerType } from '../lib/db';
 
-// 修正 LocationTask：包含所有需要的欄位 (Task 基礎 + 地理資訊 + 描述)
-// 描述欄位被加入，以確保與 NeedForm.tsx 傳入的任務結構兼容。
-type LocationTask = Task & {
-  lat: number;
-  lng: number;
-  locationText: string;
-  description: string; // 修正 TS2322 錯誤的關鍵
-}
+type RichMarker = FirestoreMarker;
+type NewTaskData = Omit<Task, 'id' | 'updatedAt' | 'linkedMarkerId'>;
+type NewItemForm = { lat: number; lng: number; type: MarkerType; description: string; };
 
-// 中文 ↔ 英文 類型映射（資料層存英文，UI 顯示中文）
-const zhToEn: Record<string, MarkerType> = {
-  '幫忙': 'block',
-  '物資存放位置': 'supply',
-  '危險區域': 'danger',
-  '集合點': 'meeting'
-}
-const enToZh: Record<MarkerType, string> = {
-  block: '幫忙',
-  supply: '物資存放位置',
-  danger: '危險區域',
-  meeting: '集合點'
-}
-// 顏色一致（標籤＝標註顏色）
-const zhColor: Record<string, string> = {
-  '幫忙': '#0ea5e9',
-  '物資存放位置': '#10b981',
-  '危險區域': '#ef4444',
-  '集合點': '#f59e0b'
-}
+const zhToEn: Record<string, MarkerType> = { '幫忙': 'block', '物資存放位置': 'supply', '危險區域': 'danger', '集合點': 'meeting' };
+const enToZh: Record<MarkerType, string> = { block: '幫忙', supply: '物資存放位置', danger: '危險區域', meeting: '集合點' };
+const zhColor: Record<string, string> = { '幫忙': '#0ea5e9', '物資存放位置': '#10b981', '危險區域': '#ef4444', '集合點': '#f59e0b' };
 
-type BBox = { minLng: number; minLat: number; maxLng: number; maxLat: number }
-type PlaceOption = {
-  id?: string
-  label: string
-  city?: string
-  district?: string
-  bbox: BBox
-  center: [number, number]
-  zoom?: number
-}
-type MarkerEntry = { data: RichMarker; obj: maplibregl.Marker }
-// placeCache 儲存結構更新
-const placeCache = new Map<string, { city?: string; district?: string; place?: string; fullAddress?: string }>()
+type BBox = { minLng: number; minLat: number; maxLng: number; maxLat: number };
+type PlaceOption = { id?: string; label: string; city?: string; district?: string; bbox: BBox; center: [number, number]; zoom?: number; };
+type MarkerEntry = { data: RichMarker; obj: maplibregl.Marker };
 
-const LAST_PLACE_KEY = 'help_hub:lastPlace'
-const CUSTOM_PLACES_KEY = 'help_hub:customPlaces'
+const LAST_PLACE_KEY = 'help_hub:lastPlace';
+const CUSTOM_PLACES_KEY = 'help_hub:customPlaces';
 
 export default function MapPage() {
-  // 行動視口高度
-  const [vh, setVh] = useState<number>(window.innerHeight)
+  const { user } = useAuth();
+
+  const [allMarkers, setAllMarkers] = useState<RichMarker[]>([]);
+  const [isDataLoading, setIsDataLoading] = useState(true);
+
+  const [vh, setVh] = useState<number>(window.innerHeight);
+  const mapRef = useRef<maplibregl.Map | null>(null);
+  const [mapReady, setMapReady] = useState(false);
+
+  const markerIndexRef = useRef<Map<string, MarkerEntry>>(new Map());
+  const [filterOpen, setFilterOpen] = useState<boolean>(false);
+  const [selectedPlace, setSelectedPlace] = useState<PlaceOption | null>(null);
+  const [searchInput, setSearchInput] = useState('');
+  const [searchResults, setSearchResults] = useState<PlaceOption[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+
+  const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
+  const [newItemForm, setNewItemForm] = useState<Partial<NewItemForm>>({});
+
+  const [customPlaces, setCustomPlaces] = useState<PlaceOption[]>([]);
+
   useEffect(() => {
-    const update = () => setVh(window.innerHeight)
-    window.addEventListener('resize', update)
-    window.addEventListener('orientationchange', update)
-    return () => {
-      window.removeEventListener('resize', update)
-      window.removeEventListener('orientationchange', update)
-    }
-  }, [])
-
-  const typeOptionsZh = ['幫忙', '物資存放位置', '危險區域', '集合點'] as const
-  const [currentTypeZh, setCurrentTypeZh] = useState<typeof typeOptionsZh[number]>('幫忙')
-  const currentTypeZhRef = useRef(currentTypeZh)
-  useEffect(() => { currentTypeZhRef.current = currentTypeZh }, [currentTypeZh])
-
-  const mapRef = useRef<maplibregl.Map | null>(null)
-  const markerIndexRef = useRef<Map<string, MarkerEntry>>(new Map())
-
-  const [filterOpen, setFilterOpen] = useState<boolean>(false)
-  const [selectedPlace, setSelectedPlace] = useState<PlaceOption | null>(null)
-  const [searchInput, setSearchInput] = useState('')
-  const [searchResults, setSearchResults] = useState<PlaceOption[]>([])
-  const [isSearching, setIsSearching] = useState(false)
-
-  // 常用地區（localStorage；預設加入花蓮縣光復鄉）
-  const [customPlaces, setCustomPlaces] = useState<PlaceOption[]>(() => {
     try {
-      const v = localStorage.getItem(CUSTOM_PLACES_KEY)
-      const parsed = v ? JSON.parse(v) as PlaceOption[] : []
-      const presetId = 'preset-hualien-guangfu'
-      const exists = parsed.some(p => p.id === presetId || p.label.includes('花蓮縣 光復鄉'))
-      if (!exists) {
+      const v = localStorage.getItem(CUSTOM_PLACES_KEY);
+      const parsed = v ? JSON.parse(v) as PlaceOption[] : [];
+      if (!parsed.some(p => p.label.includes('花蓮縣 光復鄉'))) {
         parsed.unshift({
-          id: presetId,
-          label: '花蓮縣 光復鄉',
-          city: '花蓮縣',
-          district: '光復鄉',
+          id: 'preset-hualien-guangfu', label: '花蓮縣 光復鄉', city: '花蓮縣', district: '光復鄉',
           bbox: { minLng: 121.36, minLat: 23.63, maxLng: 121.47, maxLat: 23.75 },
-          center: [121.44, 23.70],
-          zoom: 12
-        })
+          center: [121.44, 23.70], zoom: 12
+        });
       }
-      return parsed
-    } catch {
-      return [{
-        id: 'preset-hualien-guangfu',
-        label: '花蓮縣 光復鄉',
-        city: '花蓮縣',
-        district: '光復鄉',
-        bbox: { minLng: 121.36, minLat: 23.63, maxLng: 121.47, maxLat: 23.75 },
-        center: [121.44, 23.70],
-        zoom: 12
-      }]
-    }
-  })
-  useEffect(() => { localStorage.setItem(CUSTOM_PLACES_KEY, JSON.stringify(customPlaces)) }, [customPlaces])
+      setCustomPlaces(parsed);
+    } catch { }
+  }, []);
 
-  // 初始化地圖＋自動導航到上次區域
+  useEffect(() => {
+    localStorage.setItem(CUSTOM_PLACES_KEY, JSON.stringify(customPlaces))
+  }, [customPlaces]);
+
+  useEffect(() => {
+    const update = () => setVh(window.innerHeight);
+    window.addEventListener('resize', update);
+    window.addEventListener('orientationchange', update);
+    return () => {
+      window.removeEventListener('resize', update);
+      window.removeEventListener('orientationchange', update);
+    };
+  }, []);
+
+  // 訂閱標註資料（即時）
+  useEffect(() => {
+    setIsDataLoading(true);
+    const unsubscribe = subscribeToMarkers((markersFromDb) => {
+      setAllMarkers(markersFromDb);
+      setIsDataLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // 初始化地圖，並在 load 後標記 mapReady
   useEffect(() => {
     const map = new maplibregl.Map({
       container: 'map',
       style: {
         version: 8,
-        sources: {
-          osm: {
-            type: 'raster',
-            tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
-            tileSize: 256,
-            attribution: '© OpenStreetMap contributors'
-          }
-        },
+        sources: { osm: { type: 'raster', tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'], tileSize: 256, attribution: '© OpenStreetMap' } },
         layers: [{ id: 'osm', type: 'raster', source: 'osm' }]
       },
       center: [121.5654, 25.0330],
       zoom: 11
-    })
-    map.addControl(new maplibregl.NavigationControl(), 'top-right')
-    mapRef.current = map
+    });
+    map.addControl(new maplibregl.NavigationControl(), 'top-right');
+    mapRef.current = map;
 
-    // 載入既有標註（增量建立，不重繪）
-    ;(async () => {
-      // 讀取時斷言為擴充型別 RichMarker (TaskLinkedRichMarker)
-      const list = await db.markers.toArray() as RichMarker[]
-      list.forEach(m => createMarkerOnMap(m))
-      // 自動導航到上次區域（若存在）
-      const last = getLastPlace()
-      if (last) {
-        setSelectedPlace(last)
-        applyPlace(last)
-      }
-    })()
+    const last = getLastPlace();
+    if (last) {
+      setSelectedPlace(last);
+      applyPlace(last, map);
+    }
 
-    // 點擊地圖新增（即時）
+    // 點擊地圖開啟新增表單
     const clickHandler = (e: maplibregl.MapMouseEvent) => {
-      const { lat, lng } = e.lngLat
-      addMarkerFast(currentTypeZhRef.current, lat, lng)
-    }
-    map.on('click', clickHandler)
+      const { lat, lng } = e.lngLat;
+      setNewItemForm({ lat, lng, type: 'block', description: '' });
+      setIsModalOpen(true);
+    };
+    map.on('click', clickHandler);
 
-    const markerIndex = markerIndexRef.current
+    // 等地圖載入完成
+    map.on('load', () => {
+      setMapReady(true);
+      // 若沒有選擇地區但已有資料，飛到第一筆資料
+      setTimeout(() => {
+        if (!selectedPlace && allMarkers.length > 0) {
+          const m = allMarkers[0];
+          map.flyTo({ center: [m.lng, m.lat] as LngLatLike, zoom: 13 });
+        }
+      }, 0);
+    });
+
     return () => {
-      map.off('click', clickHandler)
-      for (const entry of markerIndex.values()) entry.obj.remove()
-      markerIndex.clear()
-      map.remove()
-    }
+      map.off('click', clickHandler);
+      map.remove();
+      setMapReady(false);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, []);
 
-  // 立即新增：先畫點與寫 DB，再背景補查地名（placeCache），最後增量更新 title 與可見性
-  async function addMarkerFast(typeZh: string, lat: number, lng: number) {
-    const typeEn: MarkerType = zhToEn[typeZh] ?? 'block'
-    const id = crypto.randomUUID()
-    // 初始化時，linkedTaskId 預設為 undefined
-    const m: RichMarker = {
-      id,
-      type: typeEn,
-      lat,
-      lng,
-      updatedAt: Date.now(),
-      linkedTaskId: undefined // 新增欄位
-    }
-    createMarkerOnMap(m)
-    await db.markers.put(m as BaseMarker) // 寫入 DB 時斷言回 BaseMarker
+  const createMarkerOnMap = useCallback((m: RichMarker) => {
+    const map = mapRef.current;
+    if (!map || !m.id) return;
 
-    // 背景補地名
-    reverseGeocodeAdmin(lat, lng).then(info => {
-      if (!info) return
-      // 將 fullAddress 儲存到 placeCache
-      placeCache.set(id, {
-        city: info.city,
-        district: info.district,
-        place: info.place,
-        fullAddress: info.fullAddress // 新增
-      })
-      const entry = markerIndexRef.current.get(id)
-      if (entry) {
-        const zhLabel = enToZh[entry.data.type]
-        // 標註的 title 顯示詳細地址
-        entry.obj.getElement().title =
-          `${info.fullAddress || formatAdmin(info.city, info.district)} ／ ${zhLabel}（${formatCoord(lat, lng)}）`
-      }
-      // 視覺增量更新：可見性
-      applyVisibilityByFilterEntry(id)
-      // 列表更新：改用狀態標記觸發最小重繪
-      bumpListVersion()
-    }).catch(()=>{})
-  }
+    const el = document.createElement('div');
+    const zhLabel = enToZh[m.type];
+    Object.assign(el.style, {
+      width: '22px',
+      height: '22px',
+      borderRadius: '50%',
+      border: '2px solid #fff',
+      boxShadow: '0 1px 6px rgba(0,0,0,0.3)',
+      background: zhColor[zhLabel] || '#6b7280',
+      cursor: 'pointer',
+      zIndex: '10'
+    });
+    el.title = `${m.fullAddress || formatAdmin(m.city, m.district)} ／ ${zhLabel}（${formatCoord(m.lat, m.lng)}）`;
 
-  // 建立地圖標註（單筆）
-  function createMarkerOnMap(m: RichMarker) {
-    const map = mapRef.current
-    if (!map) return
-    const el = document.createElement('div')
-    const zhLabel = enToZh[m.type]
-    el.style.width = '22px'
-    el.style.height = '22px'
-    el.style.borderRadius = '50%'
-    el.style.border = '2px solid #fff'
-    el.style.boxShadow = '0 1px 6px rgba(0,0,0,0.3)'
-    el.style.background = zhColor[zhLabel] || '#6b7280'
-    const cached = placeCache.get(m.id!)
-    // 使用 fullAddress 提升 title 資訊量
-    el.title = `${cached?.fullAddress || formatAdmin(cached?.city, cached?.district)} ／ ${zhLabel}（${formatCoord(m.lat, m.lng)}）`
+    const markerObj = new maplibregl.Marker({ element: el })
+      .setLngLat([m.lng, m.lat] as LngLatLike)
+      .addTo(map);
 
-    const markerObj = new maplibregl.Marker({ element: el }).setLngLat([m.lng, m.lat]).addTo(map)
-    markerIndexRef.current.set(m.id!, { data: m, obj: markerObj })
-    applyVisibilityByFilterEntry(m.id!)
-  }
+    markerIndexRef.current.set(m.id, { data: m, obj: markerObj });
+  }, []);
 
-  async function removeMarker(id: string) {
-    const entry = markerIndexRef.current.get(id)
-    if (entry) {
-      entry.obj.remove()
-      markerIndexRef.current.delete(id)
-    }
-    placeCache.delete(id)
-    await db.markers.delete(id)
-    bumpListVersion()
-  }
+  const shouldShow = useCallback((m: RichMarker) => {
+    const bbox = selectedPlace?.bbox;
+    const city = selectedPlace?.city ? normalize(selectedPlace.city) : undefined;
+    const district = selectedPlace?.district ? normalize(selectedPlace.district) : undefined;
 
-  // 將標註轉換為任務 (包含重複檢查與標註更新)
-  async function createTaskFromMarker(marker: RichMarker) {
-    // 1. 檢查是否已轉過任務
-    if (marker.linkedTaskId) {
-      // 嘗試讀取任務確認是否存在
-      const existingTask = await db.tasks.get(marker.linkedTaskId)
-      if (existingTask) {
-        alert(`此標註已轉為任務：「${existingTask.title}」（ID: ${marker.linkedTaskId}）。請勿重複建立。`)
+    // 經緯度必須是有限數字
+    const validCoord = Number.isFinite(m.lat) && Number.isFinite(m.lng);
+    if (!validCoord) return false;
+
+    const inBox = !bbox || (m.lng >= bbox.minLng && m.lng <= bbox.maxLng && m.lat >= bbox.minLat && m.lat <= bbox.maxLat);
+    if (!city && !district) return inBox;
+
+    const matchAdmin = (!city || normalize(m.city) === city) && (!district || normalize(m.district) === district);
+    return inBox && matchAdmin;
+  }, [selectedPlace]);
+
+  // 同步 UI（建立/更新/移除標註；並控制顯示/隱藏）
+  useEffect(() => {
+    if (!mapRef.current || !mapReady) return;
+
+    const markerIndex = markerIndexRef.current;
+    const dataIds = new Set(allMarkers.map(m => m.id));
+
+    // 新增或更新
+    allMarkers.forEach(markerData => {
+      if (!markerIndex.has(markerData.id)) {
+        createMarkerOnMap(markerData);
       } else {
-        // 任務可能已被刪除，彈出提示並詢問是否重新建立
-        const confirm = window.confirm(`此標註曾轉為任務 (ID: ${marker.linkedTaskId})，但任務已不存在。要重新建立新任務嗎？`)
-        if (!confirm) return
-        marker.linkedTaskId = undefined // 清除舊連結
+        const entry = markerIndex.get(markerData.id)!;
+        entry.data = markerData;
       }
-      if (existingTask) return // 如果任務存在，則中止
+    });
+
+    // 移除資料中已不存在的標註
+    markerIndex.forEach((entry, id) => {
+      if (!dataIds.has(id)) {
+        entry.obj.remove();
+        markerIndex.delete(id);
+      }
+    });
+
+    // 控制顯示與隱藏
+    markerIndex.forEach(entry => {
+      const show = shouldShow(entry.data);
+      entry.obj.getElement().style.display = show ? '' : 'none';
+    });
+
+    // 若尚未選地區，且有資料，且鏡頭仍在預設中心，試著聚焦到最新資料
+    if (!selectedPlace && allMarkers.length > 0) {
+      const latest = [...allMarkers].sort((a, b) => b.updatedAt.toMillis() - a.updatedAt.toMillis())[0];
+      mapRef.current.flyTo({ center: [latest.lng, latest.lat] as LngLatLike, zoom: 13 });
+    }
+  }, [allMarkers, shouldShow, createMarkerOnMap, mapReady, selectedPlace]);
+
+  async function handleFormSubmit() {
+    const form = newItemForm;
+    if (!form.lat || !form.lng || !form.type || !form.description?.trim()) {
+      alert('請填寫完整資訊！');
+      return;
     }
 
-    const cached = placeCache.get(marker.id!)
-    const zhLabel = enToZh[marker.type]
-    // 使用 fullAddress 作為任務地點的詳細文字 (已包含所有行政區、路名、號碼)
-    const fullAddress = cached?.fullAddress || formatAdmin(cached?.city, cached?.district)
-    const coordText = formatCoord(marker.lat, marker.lng)
+    const geoInfo = await reverseGeocodeAdmin(form.lat, form.lng);
+    const locationText = geoInfo?.fullAddress || `座標: ${form.lat.toFixed(5)}, ${form.lng.toFixed(5)}`;
+    const title = `${enToZh[form.type]}: ${geoInfo?.district || '未知區域'}`;
 
-    const title = `處理：${zhLabel} @ ${fullAddress}`
-    const locationText = fullAddress || coordText // 優先使用詳細地址
+    const markerData = {
+      type: form.type,
+      lat: form.lat, lng: form.lng,
+      city: geoInfo?.city || '', district: geoInfo?.district || '', fullAddress: geoInfo?.fullAddress || '',
+      creatorId: user?.uid || null,
+    };
 
-    const newTaskId = crypto.randomUUID()
+    const taskData: NewTaskData = {
+      title, status: 'todo' as TaskStatus,
+      lat: form.lat, lng: form.lng,
+      locationText,
+      description: form.description,
+      creatorId: user?.uid || null,
+      creatorName: user?.displayName || '匿名使用者',
+    };
 
-    // 2. 建立新任務 (LocationTask)
-    const newTask: LocationTask = {
-      id: newTaskId,
-      title: title,
-      status: 'todo', // 預設為待辦
-      lat: marker.lat,
-      lng: marker.lng,
-      locationText: locationText, // 儲存完整地址
-      updatedAt: Date.now(),
-      description: `來自地圖標註：${zhLabel}。` // 必須包含 description
-    }
-
-    await db.tasks.put(newTask as Task)
-
-    // 3. 更新標註 (Marker) 的 linkedTaskId
-    const updatedMarker: RichMarker = { ...marker, linkedTaskId: newTaskId, updatedAt: Date.now() }
-
-    // 更新本地 Map 中的資料
-    const entry = markerIndexRef.current.get(marker.id!)
-    if (entry) {
-        entry.data = updatedMarker
-    }
-
-    // 寫回 db.markers (必須寫回才能離線保存連結狀態)
-    await db.markers.put(updatedMarker as BaseMarker)
-
-    // 觸發列表重繪，以更新「轉任務」按鈕狀態
-    bumpListVersion()
-
-    // 提示使用者
-    alert(`已新增任務：「${title}」。請前往「任務板」查看。`)
-  }
-
-  // 篩選：只切換顯示/隱藏（避免重建）
-  function applyVisibilityByFilter() {
-    const bbox = selectedPlace?.bbox
-    const city = normalize(selectedPlace?.city)
-    const district = normalize(selectedPlace?.district)
-    for (const entry of markerIndexRef.current.values()) {
-      const cached = placeCache.get(entry.data.id!)
-      const show = shouldShow(entry.data, cached, bbox, city, district)
-      entry.obj.getElement().style.display = show ? '' : 'none'
-    }
-    bumpListVersion()
-  }
-  function applyVisibilityByFilterEntry(id: string) {
-    const entry = markerIndexRef.current.get(id)
-    if (!entry) return
-    const bbox = selectedPlace?.bbox
-    const city = normalize(selectedPlace?.city)
-    const district = normalize(selectedPlace?.district)
-    const cached = placeCache.get(id)
-    const show = shouldShow(entry.data, cached, bbox, city, district)
-    entry.obj.getElement().style.display = show ? '' : 'none'
-  }
-  function shouldShow(m: RichMarker, cached?: { city?: string; district?: string }, bbox?: BBox | null, city?: string, district?: string) {
-    let inBox = true
-    if (bbox) {
-      inBox = m.lng >= bbox.minLng && m.lng <= bbox.maxLng && m.lat >= bbox.minLat && m.lat <= bbox.maxLat
-    }
-    let matchAdmin = true
-    if (city || district) {
-      matchAdmin =
-        (!city || normalize(cached?.city) === city) &&
-        (!district || normalize(cached?.district) === district)
-    }
-    return inBox && matchAdmin
-  }
-
-  // 搜尋（結果點選：導航＋詢問加入常用）
-  async function searchPlace(query: string) {
-    const q = query.trim()
-    if (!q) { setSearchResults([]); return }
     try {
-      setIsSearching(true)
-      const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(q)}&countrycodes=tw&addressdetails=1&limit=10`
-      const res = await fetch(url, { headers: { 'Accept-Language': 'zh-TW' } })
-      const data = await res.json() as any[]
-      const options: PlaceOption[] = data.map(d => {
-        const a = d.address || {}
-        const city = a.city || a.county || a.state || a.town || a.village
-        const district = a.city_district || a.district || a.suburb || a.town || a.village
-        const label = [city, district].filter(Boolean).join(' ')
-        const bbox = toBBox(d.boundingbox)
-        const center: [number, number] = [Number(d.lon), Number(d.lat)]
-        return { label: label || d.display_name, city, district, center, zoom: 13, bbox } as PlaceOption
-      }).filter(o => o.city || o.district).slice(0, 8)
-      setSearchResults(options)
-    } catch {
-      setSearchResults([])
-    } finally {
-      setIsSearching(false)
-    }
-  }
-  function onPickSearchResult(p: PlaceOption) {
-    applyPlace(p)
-    saveLastPlace(p)
-    const shouldAdd = window.confirm(`要將「${p.label}」加入常用地區嗎？`)
-    if (shouldAdd) {
-      setCustomPlaces(prev => {
-        const dup = prev.some(x =>
-          normalize(x.label) === normalize(p.label) &&
-          Math.abs(x.center[0] - p.center[0]) < 1e-6 &&
-          Math.abs(x.center[1] - p.center[1]) < 1e-6
-        )
-        if (dup) return prev
-        return [{ ...p, id: crypto.randomUUID() }, ...prev]
-      })
+      await createReport(markerData, taskData);
+      setIsModalOpen(false);
+      setNewItemForm({});
+      alert(`回報已提交！資料將會同步顯示。`);
+    } catch (error) {
+      alert('提交失敗');
+      console.error(error);
     }
   }
 
-  // 套用地區＋儲存上次區域
-  function applyPlace(p: PlaceOption) {
-    setSelectedPlace(p)
-    const map = mapRef.current
-    if (!map) return
-    if (p.zoom && p.center) {
-      map.flyTo({ center: p.center, zoom: p.zoom })
-    } else {
-      const bounds = new maplibregl.LngLatBounds([p.bbox.minLng, p.bbox.minLat], [p.bbox.maxLng, p.bbox.maxLat])
-      map.fitBounds(bounds, { padding: 16 })
+  async function handleRemoveMarker(id: string) {
+    if (window.confirm('確定要刪除這個標註嗎？')) {
+      await deleteMarker(id);
     }
-    applyVisibilityByFilter()
   }
+
+  async function handleCreateTaskFromMarker(marker: RichMarker) {
+    if (marker.linkedTaskId) {
+      alert(`此標註已轉為任務。`);
+      return;
+    }
+    const zhLabel = enToZh[marker.type];
+    const fullAddress = marker.fullAddress || formatAdmin(marker.city, marker.district);
+    const title = `處理：${zhLabel} @ ${fullAddress}`;
+    const taskData = {
+      title, status: 'todo' as TaskStatus, lat: marker.lat, lng: marker.lng,
+      locationText: fullAddress || formatCoord(marker.lat, marker.lng),
+      description: `來自地圖標註：${zhLabel}。`,
+    };
+    try {
+      const taskRef = await addTask({ ...taskData, creatorId: user?.uid || null, creatorName: user?.displayName || '匿名使用者' });
+      if (marker.id) {
+        await updateMarker(marker.id, { linkedTaskId: taskRef.id });
+      }
+      alert(`已新增任務：「${title}」。`);
+    } catch (error) {
+      alert('轉為任務失敗');
+      console.error(error);
+    }
+  }
+
+  const visibleEntries = useMemo(() => {
+    return allMarkers
+      .filter(shouldShow)
+      .sort((a, b) => b.updatedAt.toMillis() - a.updatedAt.toMillis());
+  }, [allMarkers, shouldShow]);
+
+  async function searchPlace(query: string) {
+    const q = query.trim();
+    if (!q) {
+      setSearchResults([]);
+      return;
+    }
+    setIsSearching(true);
+    try {
+      const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(q)}&countrycodes=tw&addressdetails=1&limit=10`;
+      const res = await fetch(url, { headers: { 'Accept-Language': 'zh-TW' } });
+      const data = await res.json() as any[];
+      setSearchResults(data.map(d => {
+        const a = d.address || {}, city = a.city || a.county || a.state, district = a.city_district || a.district || a.suburb;
+        return {
+          label: [city, district].filter(Boolean).join(' ') || d.display_name,
+          city,
+          district,
+          center: [Number(d.lon), Number(d.lat)],
+          zoom: 13,
+          bbox: toBBox(d.boundingbox)
+        } as PlaceOption;
+      }).filter(o => o.city || o.district).slice(0, 8));
+    } catch {
+      setSearchResults([]);
+    } finally {
+      setIsSearching(false);
+    }
+  }
+
+  function onPickSearchResult(p: PlaceOption) {
+    applyPlace(p);
+    saveLastPlace(p);
+    if (window.confirm(`要將「${p.label}」加入常用地區嗎？`)) {
+      setCustomPlaces(prev => !prev.some(x => normalize(x.label) === normalize(p.label)) ? [{ ...p, id: crypto.randomUUID() }, ...prev] : prev);
+    }
+  }
+
+  function applyPlace(p: PlaceOption, mapInstance = mapRef.current) {
+    setSelectedPlace(p);
+    if (!mapInstance) return;
+    if (p.zoom && p.center) {
+      mapInstance.flyTo({ center: p.center as LngLatLike, zoom: p.zoom });
+    } else {
+      mapInstance.fitBounds(new maplibregl.LngLatBounds([p.bbox.minLng, p.bbox.minLat], [p.bbox.maxLng, p.bbox.maxLat]), { padding: 16 });
+    }
+  }
+
   function clearFilter() {
-    setSelectedPlace(null)
-    setSearchResults([])
-    setSearchInput('')
-    const map = mapRef.current
-    if (map) map.flyTo({ center: [121.5654, 25.0330], zoom: 11 })
-    applyVisibilityByFilter()
-    saveLastPlace(null)
+    setSelectedPlace(null);
+    setSearchResults([]);
+    setSearchInput('');
+    mapRef.current?.flyTo({ center: [121.5654, 25.0330], zoom: 11 });
+    saveLastPlace(null);
   }
 
   function removeCustom(id?: string) {
-    if (!id) return
-    setCustomPlaces(prev => prev.filter(x => x.id !== id))
+    if (id) setCustomPlaces(prev => prev.filter(x => x.id !== id));
   }
 
-  // 存取上次區域（localStorage）
   function saveLastPlace(p: PlaceOption | null) {
     try {
-      if (!p) {
-        localStorage.removeItem(LAST_PLACE_KEY)
-      } else {
-        localStorage.setItem(LAST_PLACE_KEY, JSON.stringify(p))
-      }
-    } catch {}
+      p ? localStorage.setItem(LAST_PLACE_KEY, JSON.stringify(p)) : localStorage.removeItem(LAST_PLACE_KEY);
+    } catch { }
   }
+
   function getLastPlace(): PlaceOption | null {
     try {
-      const v = localStorage.getItem(LAST_PLACE_KEY)
-      return v ? JSON.parse(v) as PlaceOption : null
+      const v = localStorage.getItem(LAST_PLACE_KEY);
+      return v ? JSON.parse(v) : null;
     } catch {
-      return null
+      return null;
     }
   }
 
-  // 背景反地理編碼 (優化：提取並格式化完整地址)
   async function reverseGeocodeAdmin(lat: number, lng: number): Promise<{ city?: string; district?: string; place?: string; fullAddress?: string } | undefined> {
     try {
-      const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1` // 提高 zoom 獲取更詳細地址
-      const res = await fetch(url, { headers: { 'Accept-Language': 'zh-TW' } })
-      if (!res.ok) return undefined
-      const data = await res.json()
-      const a = data?.address || {}
-
-      // 定義優先級，越高級的行政區越靠前
-      const city = a.city || a.county || a.state // 縣市 (最高級別)
-      const district = a.city_district || a.district || a.suburb || a.town || a.village // 區鄉鎮
-      const neighbourhood = a.neighbourhood // 社區/鄰里
-      const road = a.road // 路名
-      const houseNumber = a.house_number // 號碼
-
-      // 構建完整地址：[縣市] [區鄉鎮] [鄰里/社區] [路名] [號碼]
-      const addressParts = [city, district, neighbourhood, road, houseNumber].filter(Boolean)
-      const fullAddress = addressParts.join('') === '' ? undefined : addressParts.join('')
-
-      // 構建一般地點描述：[縣市] [區鄉鎮] [路名]
-      const place = [city, district, road].filter(Boolean).join(' ')
-
-      return {
-        city,
-        district,
-        place,
-        fullAddress // 完整地址 (例: 花蓮縣光復鄉中山路88號)
-      }
+      const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`;
+      const res = await fetch(url, { headers: { 'Accept-Language': 'zh-TW' } });
+      if (!res.ok) return undefined;
+      const data = await res.json(), a = data?.address || {};
+      const city = a.city || a.county || a.state, district = a.city_district || a.district || a.suburb || a.town || a.village;
+      const addressParts = [city, district, a.neighbourhood, a.road, a.house_number].filter(Boolean);
+      return { city, district, place: [city, district, a.road].filter(Boolean).join(' '), fullAddress: addressParts.join('') || undefined };
     } catch {
-      return undefined
+      return undefined;
     }
   }
 
-  // 列表效能優化：以狀態版本觸發最小重繪，列表資料用 memo 計算
-  const [listVersion, setListVersion] = useState(0)
-  function bumpListVersion() { setListVersion(v => v + 1) }
-  const visibleEntries = useMemo(() => {
-    // 僅取目前可見的標註（元素 display !== none），避免大量計算
-    const arr: MarkerEntry[] = []
-    for (const entry of markerIndexRef.current.values()) {
-      if (entry.obj.getElement().style.display !== 'none') {
-        arr.push(entry)
-      }
-    }
-    // 依更新時間排序，較新的在前
-    arr.sort((a, b) => (b.data.updatedAt ?? 0) - (a.data.updatedAt ?? 0))
-    return arr
-    // 依 listVersion 觸發重算
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [listVersion])
-
-  // 工具與樣式
   function toBBox(b: any): BBox {
-    const minLat = Number(b[0]), maxLat = Number(b[1]), minLng = Number(b[2]), maxLng = Number(b[3])
-    return { minLng, minLat, maxLng, maxLat }
-  }
-  function normalize(s?: string) { return (s || '').trim() }
-  function formatAdmin(city?: string, district?: string) {
-    return `${city || ''}${district ? ' ' + district : ''}`.trim() || '未知地區'
-  }
-  function formatCoord(lat: number, lng: number) {
-    return `${lat.toFixed(5)}, ${lng.toFixed(5)}`
+    const [minLat, maxLat, minLng, maxLng] = b.map(Number);
+    return { minLng, minLat, maxLng, maxLat };
   }
 
-  const headerStyle: React.CSSProperties = {
-    display: 'flex', gap: 8, padding: 8, alignItems: 'center', overflowX: 'auto', whiteSpace: 'nowrap'
+  function normalize(s?: string) {
+    return (s || '').trim();
   }
-  const segBtnStyle = (active: boolean, zh: string): React.CSSProperties => ({
-    padding: '8px 12px',
-    borderRadius: 999,
-    border: `2px solid ${zhColor[zh]}`,
-    background: active ? `${zhColor[zh]}22` : '#fff',
-    color: '#111',
-    fontSize: 14
-  })
-  const filterToggleStyle: React.CSSProperties = {
-    padding: '10px 12px', border: '1px solid #ddd', borderRadius: 8, background: '#f9fafb'
+
+  function formatAdmin(city?: string, district?: string) {
+    return `${city || ''}${district ? ' ' + district : ''}`.trim() || '未知地區';
   }
-  const filterPanelStyle: React.CSSProperties = {
-    padding: 8, border: '1px solid #eee', borderRadius: 8, marginTop: 8
+
+  function formatCoord(lat: number, lng: number) {
+    return `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
   }
-  const searchInputStyle: React.CSSProperties = {
-    flex: 1, padding: '10px', border: '1px solid #ddd', borderRadius: 8, fontSize: 16
-  }
-  const searchBtnStyle: React.CSSProperties = {
-    padding: '10px 12px', border: '1px solid #ddd', borderRadius: 8, fontSize: 16, background: '#fff'
-  }
+
+  const filterToggleStyle: React.CSSProperties = { padding: '10px 12px', border: '1px solid #ddd', borderRadius: 8, background: '#f9fafb', cursor: 'pointer', width: '100%' };
+  const filterPanelStyle: React.CSSProperties = { padding: 8, border: '1px solid #eee', borderRadius: 8, marginTop: 8 };
+  const searchInputStyle: React.CSSProperties = { flex: 1, padding: '10px', border: '1px solid #ddd', borderRadius: 8, fontSize: 16 };
+  const searchBtnStyle: React.CSSProperties = { padding: '10px 12px', border: '1px solid #ddd', borderRadius: 8, fontSize: 16, background: '#fff', cursor: 'pointer' };
   const bigListBtnStyle: React.CSSProperties = {
-    width: '100%', textAlign: 'left' as const, padding: '12px', border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff'
-  }
+    width: '100%',
+    textAlign: 'left' as const,
+    padding: '12px',
+    border: '1px solid #e5e7eb',
+    borderRadius: 8,
+    background: '#fff',
+    cursor: 'pointer'
+  };
+  const modalOverlayStyle: React.CSSProperties = {
+    position: 'fixed',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    background: 'rgba(0,0,0,0.5)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1000
+  };
+  const modalContentStyle: React.CSSProperties = {
+    background: 'white',
+    padding: '20px',
+    borderRadius: '8px',
+    width: '90%',
+    maxWidth: '500px',
+    boxShadow: '0 4px 20px rgba(0,0,0,0.2)'
+  };
 
   return (
     <div style={{ padding: 8 }}>
-      {/* 類型切換（與標註同色） */}
-      <div style={headerStyle}>
-        {typeOptionsZh.map(t => (
-          <button key={t} onClick={() => setCurrentTypeZh(t)} style={segBtnStyle(currentTypeZh === t, t)}>
-            <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 999, background: zhColor[t], marginRight: 8, verticalAlign: 'middle' }} />
-            {t}
-          </button>
-        ))}
-        <button onClick={() => {
-          const c = mapRef.current?.getCenter()
-          if (c) addMarkerFast(currentTypeZh, c.lat, c.lng)
-        }} style={{ marginLeft: 8, ...segBtnStyle(false, currentTypeZh) }}>
-          + 在中心新增
-        </button>
-      </div>
+      {isModalOpen && (
+        <div style={modalOverlayStyle}>
+          <div style={modalContentStyle}>
+            <h2>新增標註點</h2>
+            <p style={{ fontSize: 14, color: '#666', marginTop: 0 }}>
+              座標: {newItemForm.lat?.toFixed(5)}, {newItemForm.lng?.toFixed(5)}
+            </p>
+            <label>類別：</label>
+            <select
+              value={newItemForm.type}
+              onChange={e => setNewItemForm(p => ({ ...p, type: e.target.value as MarkerType }))}
+              style={{ width: '100%', padding: 8, fontSize: 16 }}
+            >
+              {Object.entries(enToZh).map(([en, zh]) => <option key={en} value={en}>{zh}</option>)}
+            </select>
+            <label style={{ marginTop: 12 }}>簡要描述：</label>
+            <textarea
+              value={newItemForm.description ?? ''}
+              onChange={e => setNewItemForm(p => ({ ...p, description: e.target.value }))}
+              style={{ width: 'calc(100% - 18px)', minHeight: 80, padding: 8, fontSize: 16 }}
+              placeholder="請簡要描述情況，這將成為任務內容..."
+            />
+            <div style={{ marginTop: 20, display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
+              <button
+                onClick={() => setIsModalOpen(false)}
+                style={{ background: '#eee', border: '1px solid #ccc', padding: '8px 16px', borderRadius: 6, cursor: 'pointer' }}
+              >
+                取消
+              </button>
+              <button
+                onClick={handleFormSubmit}
+                style={{
+                  background: '#10b981',
+                  color: 'white',
+                  border: '1px solid #059669',
+                  fontWeight: 'bold',
+                  padding: '8px 16px',
+                  borderRadius: 6,
+                  cursor: 'pointer'
+                }}
+              >
+                提交
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
-      {/* 篩選（合併搜尋與常用；可收合） */}
       <div style={{ marginTop: 8 }}>
         <button onClick={() => setFilterOpen(v => !v)} style={filterToggleStyle}>
           {filterOpen ? '收合地區篩選 ▲' : '展開地區篩選 ▼'}
@@ -546,15 +492,16 @@ export default function MapPage() {
               <input
                 value={searchInput}
                 onChange={e => setSearchInput(e.target.value)}
-                placeholder="輸入鄉鎮市區或路名，如：光復鄉、信義區、板橋區"
+                placeholder="輸入鄉鎮市區，如：光復鄉"
                 style={searchInputStyle}
               />
               <button onClick={() => searchPlace(searchInput)} disabled={isSearching} style={searchBtnStyle}>
                 {isSearching ? '搜尋中…' : '搜尋'}
               </button>
             </div>
+
             {searchResults.length > 0 && (
-              <ul style={{ marginTop: 8, display: 'grid', gap: 8, maxHeight: 240, overflow: 'auto' }}>
+              <ul style={{ marginTop: 8, display: 'grid', gap: 8, maxHeight: 240, overflow: 'auto', padding: 0, listStyle: 'none' }}>
                 {searchResults.map((r, idx) => (
                   <li key={idx}>
                     <button onClick={() => onPickSearchResult(r)} style={bigListBtnStyle}>{r.label}</button>
@@ -566,12 +513,22 @@ export default function MapPage() {
             {customPlaces.length > 0 && (
               <>
                 <div style={{ fontWeight: 600, marginTop: 12, marginBottom: 6 }}>常用地區</div>
-                <ul style={{ display: 'grid', gap: 8 }}>
+                <ul style={{ display: 'grid', gap: 8, padding: 0, listStyle: 'none' }}>
                   {customPlaces.map(p => (
                     <li key={p.id || p.label}>
                       <div style={{ display: 'flex', gap: 8 }}>
-                        <button onClick={() => { applyPlace(p); saveLastPlace(p) }} style={bigListBtnStyle}>{p.label}</button>
-                        <button onClick={() => removeCustom(p.id)} style={{ ...bigListBtnStyle, width: 100 }}>刪除</button>
+                        <button
+                          onClick={() => {
+                            applyPlace(p);
+                            saveLastPlace(p);
+                          }}
+                          style={bigListBtnStyle}
+                        >
+                          {p.label}
+                        </button>
+                        <button onClick={() => removeCustom(p.id)} style={{ ...bigListBtnStyle, width: 'auto', flexShrink: 0 }}>
+                          刪除
+                        </button>
                       </div>
                     </li>
                   ))}
@@ -586,58 +543,72 @@ export default function MapPage() {
         )}
       </div>
 
-      {/* 地圖（動態高度） */}
-      <div id="map" style={{ height: `${Math.max(320, vh - 400)}px`, border: '1px solid #ccc', borderRadius: 12, marginTop: 8 }} />
+      <div
+        id="map"
+        // 為排除高度問題，保底固定高度；仍保留原邏輯但下限 400
+        style={{ height: `${Math.max(400, vh - 400)}px`, border: '1px solid #ccc', borderRadius: 12, marginTop: 8, position: 'relative' }}
+      />
 
-      {/* 標註列表（增量、僅可見） */}
       <div style={{ marginTop: 8 }}>
-        <div style={{ fontWeight: 600, marginBottom: 6 }}>
-          標註列表（{selectedPlace ? `已套用：${selectedPlace.label}` : '未篩選'}；點 ❌ 刪除／📝 轉任務）
-        </div>
-        <ul style={{ display: 'grid', gap: 8 }}>
-          {visibleEntries.map(entry => {
-            const cached = placeCache.get(entry.data.id!)
-            const zhLabel = enToZh[entry.data.type]
-            const isLinked = !!entry.data.linkedTaskId // 檢查是否已連結任務
-
-            // 優先顯示完整地址，若無則顯示行政區+座標
-            const adminText = formatAdmin(cached?.city, cached?.district)
-            const addressDisplay = cached?.fullAddress
-              ? `地址：${cached.fullAddress}`
-              : `${adminText}／座標：${formatCoord(entry.data.lat, entry.data.lng)}`
-
-            return (
-              <li key={entry.data.id} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <button onClick={() => removeMarker(entry.data.id!)} title="刪除此標註" style={{ padding: '8px 10px', border: '1px solid #ddd', borderRadius: 8 }}>❌</button>
-                <div style={{ padding: '8px 10px', border: '1px solid #ddd', borderRadius: 8, flex: 1 }}>
-                  <div style={{ fontWeight: 600 }}>
-                    <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 999, background: zhColor[zhLabel], marginRight: 8, verticalAlign: 'middle' }} />
-                    {zhLabel}
-                    {isLinked && <span style={{ marginLeft: 8, fontSize: 12, color: '#10b981' }}>已轉任務 (ID: {entry.data.linkedTaskId?.substring(0, 4)}...)</span>}
+        <div style={{ fontWeight: 600, marginBottom: 6 }}>標註列表 ({selectedPlace ? `篩選：${selectedPlace.label}` : '未篩選'})</div>
+        {isDataLoading ? (
+          <p>正在載入標註資料...</p>
+        ) : (
+          <ul style={{ display: 'grid', gap: 8, padding: 0, listStyle: 'none' }}>
+            {visibleEntries.map((data) => {
+              const zhLabel = enToZh[data.type];
+              const isLinked = !!data.linkedTaskId;
+              return (
+                <li key={data.id} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <button
+                    onClick={() => handleRemoveMarker(data.id)}
+                    title="刪除此標註"
+                    style={{ padding: '8px 10px', border: '1px solid #ddd', borderRadius: 8, cursor: 'pointer' }}
+                  >
+                    ❌
+                  </button>
+                  <div style={{ padding: '8px 10px', border: '1px solid #ddd', borderRadius: 8, flex: 1 }}>
+                    <div style={{ fontWeight: 600 }}>
+                      <span
+                        style={{
+                          display: 'inline-block',
+                          width: 10,
+                          height: 10,
+                          borderRadius: 999,
+                          background: zhColor[zhLabel],
+                          marginRight: 8,
+                          verticalAlign: 'middle'
+                        }}
+                      />
+                      {zhLabel}
+                      {isLinked && <span style={{ marginLeft: 8, fontSize: 12, color: '#10b981' }}>(已轉任務)</span>}
+                    </div>
+                    <div style={{ color: '#6b7280', fontSize: 13, marginTop: 4 }}>
+                      {data.fullAddress ? `地址：${data.fullAddress}` : `${formatAdmin(data.city, data.district)}／座標：${formatCoord(data.lat, data.lng)}`}
+                    </div>
                   </div>
-                  <div style={{ color: '#6b7280', fontSize: 13, marginTop: 4 }}>
-                    {addressDisplay}
-                  </div>
-                </div>
-                {/* 轉任務按鈕：如果已連結，則改變樣式和行為 */}
-                <button
-                  onClick={() => createTaskFromMarker(entry.data)}
-                  title={isLinked ? `已轉為任務 (${entry.data.linkedTaskId})，點擊提醒` : "以此標註為地點建立任務"}
-                  style={{
-                    padding: '8px 10px',
-                    border: isLinked ? '1px solid #10b981' : '1px solid #ddd',
-                    borderRadius: 8,
-                    background: isLinked ? '#dcfce7' : '#e0f2f1', // light green if linked
-                    color: isLinked ? '#10b981' : '#111'
-                  }}
-                >
-                  {isLinked ? '✅ 已轉任務' : '📝 轉任務'}
-                </button>
-              </li>
-            )
-          })}
-        </ul>
+                  <button
+                    onClick={() => handleCreateTaskFromMarker(data)}
+                    disabled={isLinked}
+                    title={isLinked ? `已轉為任務` : "以此標註為地點建立任務"}
+                    style={{
+                      padding: '8px 10px',
+                      border: `1px solid ${isLinked ? '#10b981' : '#ddd'}`,
+                      borderRadius: 8,
+                      background: isLinked ? '#dcfce7' : '#f3f4f6',
+                      color: isLinked ? '#10b981' : '#111',
+                      cursor: isLinked ? 'default' : 'pointer',
+                      width: '90px'
+                    }}
+                  >
+                    {isLinked ? '✅ 已轉' : '📝 轉任務'}
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        )}
       </div>
     </div>
-  )
+  );
 }
