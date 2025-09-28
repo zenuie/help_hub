@@ -1,18 +1,11 @@
 // src/pages/MapPage.tsx
-import React, {useEffect, useMemo, useRef, useState, useCallback} from 'react';
+import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import maplibregl, {LngLatLike} from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
-import {
-    subscribeToMarkers,
-    deleteMarker,
-    updateMarker,
-    createReport,
-    addTask,
-    FirestoreMarker
-} from '../services/dataSync';
+import {addTask, createReport, deleteMarker, FirestoreMarker, subscribeToMarkers, updateMarker} from '../services/dataSync';
 import {useAuth} from '../contexts/AuthContext';
-import {Task, TaskStatus, MarkerType} from '../lib/db';
+import {MarkerType, Task, TaskStatus} from '../lib/db';
 
 type RichMarker = FirestoreMarker;
 type NewTaskData = Omit<Task, 'id' | 'updatedAt' | 'linkedMarkerId'>;
@@ -165,18 +158,31 @@ export default function MapPage() {
 
     const shouldShow = useCallback((m: RichMarker) => {
         const bbox = selectedPlace?.bbox;
-        const city = selectedPlace?.city ? normalize(selectedPlace.city) : undefined;
-        const district = selectedPlace?.district ? normalize(selectedPlace.district) : undefined;
-
-        const validCoord = Number.isFinite(m.lat) && Number.isFinite(m.lng);
-        if (!validCoord) return false;
-
         const inBox = !bbox || (m.lng >= bbox.minLng && m.lng <= bbox.maxLng && m.lat >= bbox.minLat && m.lat <= bbox.maxLat);
-        if (!city && !district) return inBox;
 
-        const matchAdmin = (!city || normalize(m.city) === city) && (!district || normalize(m.district) === district);
-        return inBox && matchAdmin;
+        if (!selectedPlace) return inBox;
+
+        const selCity = normalize(selectedPlace.city);
+        const selDistrict = normalize(selectedPlace.district);
+        const mCity = normalize(m.city);
+        const mDistrict = normalize(m.district);
+        const mAddr = normalize(m.fullAddress);
+
+        // 放寬比對：只要資料的 district 或地址包含所選 district，就當作匹配
+        const districtMatch =
+            !selDistrict ||
+            mDistrict.includes(selDistrict) ||
+            mAddr.includes(selDistrict);
+
+        // 城市同理：包含或相等
+        const cityMatch =
+            !selCity ||
+            mCity.includes(selCity) ||
+            mAddr.includes(selCity);
+
+        return inBox && cityMatch && districtMatch;
     }, [selectedPlace]);
+
 
     // 同步 UI：加入除錯、暫時強制顯示、強制鏡頭移動到最新
     useEffect(() => {
