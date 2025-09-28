@@ -5,17 +5,6 @@ import { kml as kmlToGeoJSON } from 'togeojson';
 import { createReport } from '../services/dataSync';
 import { TaskStatus, MarkerType } from '../lib/db';
 
-// **擴充：新的中文 ↔ 英文 類型與顏色映射**
-const zhToEn: Record<string, MarkerType> = {
-  '幫忙/障礙': 'block',
-  '物資站': 'supply',
-  '危險區域': 'danger',
-  '集合/避難': 'meeting',
-  '供水站': 'water',
-  '醫療站': 'medical',
-  '交通資訊': 'traffic',
-  '一般資訊': 'info',
-};
 
 const enToZh: Record<MarkerType, string> = {
   block: '幫忙/障礙',
@@ -27,18 +16,6 @@ const enToZh: Record<MarkerType, string> = {
   traffic: '交通資訊',
   info: '一般資訊',
 };
-
-const zhColor: Record<string, string> = {
-  '幫忙/障礙': '#0ea5e9',   // 藍色
-  '物資站': '#10b981',       // 綠色
-  '危險區域': '#ef4444',     // 紅色
-  '集合/避難': '#f59e0b',     // 橘色
-  '供水站': '#3b82f6',       // 亮藍色
-  '醫療站': '#8b5cf6',       // 紫色
-  '交通資訊': '#f97316',     // 亮橘色
-  '一般資訊': '#6b7280',     // 灰色
-};
-
 
 /**
  * **升級版：智慧分類函式**
@@ -336,10 +313,6 @@ function dedupeByEpsilon(points: any[], eps: number): any[] {
 function safeStr(v: any): string | undefined {
   const s = typeof v === 'string' ? v.trim() : '';
   return s || undefined;
-}
-
-function zhLabelForType(type: MarkerType): string {
-  return enToZh[type] || '標註';
 }
 
 function formatCoord(lat: number, lng: number) {
