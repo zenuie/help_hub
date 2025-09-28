@@ -1,89 +1,148 @@
+# Help Hub
 
----
+一個以地圖為核心的社群協作工具，支援即時標註與任務追蹤。使用 MapLibre 顯示地圖、Firebase Firestore 進行資料同步、Firebase Auth 進行使用者登入。專案同時提供 GitHub Actions 建置流程，透過 Repository Secrets 安全注入環境變數。
 
-# Help Hub 救災協作平台
-
-[![GitHub Actions CI/CD](https://github.com/zenuie/help_hub/actions/workflows/deploy.yml/badge.svg)](https://github.com/zenuie/help_hub/actions/workflows/deploy.yml)
-
-Help Hub 是一個輕量級、離線優先的救災協作地圖應用程式。它旨在幫助使用者在網路連線不穩定的災區，透過地圖標註回報需求、危險區域或資源位置，並將這些資訊轉換為可追蹤的任務，方便救災團隊或志工進行協調。
-
-**線上預覽 (Live Demo):** [https://zenuie.github.io/help_hub/](https://zenuie.github.io/help_hub/)
-
-## 核心功能
-
-*   **地圖標註**：使用者可以直接在地圖上點擊，快速新增四種類型的標註：
-    *   **幫忙** (`#0ea5e9`): 需要人力支援或有障礙物。
-    *   **物資存放位置** (`#10b981`): 可用的物資或補給點。
-    *   **危險區域** (`#ef4444`): 需要避開的危險地點。
-    *   **集合點** (`#f59e0b`): 人員集合或報到的地點。
-*   **標註轉任務**：地圖上的任何標註都可以一鍵轉換為待辦任務，並自動帶入地點資訊，方便後續追蹤與分配。
-*   **任務板 (Task Board)**：一個獨立的任務管理介面，用於查看、更新所有已建立任務的狀態（待辦、進行中、已完成、暫緩）。
-*   **需求回報表單**：提供一個結構化的表單，讓使用者詳細回報需求（如醫療、食物、避難所），提交後會同步建立地圖標註和任務。
-*   **離線優先 (Offline First)**：所有標註、任務和草稿都儲存在瀏覽器的 IndexedDB 中。即使在沒有網路的環境下，使用者依然可以新增標註、管理任務，待網路恢復後再進行同步（同步功能為未來擴充方向）。
-*   **地點搜尋與篩選**：可以透過關鍵字搜尋台灣的鄉鎮市區，快速定位地圖，並將搜尋過的地區儲存為常用地點，方便快速切換。
+## 功能概述
+- 地圖標註：在地圖點擊新增「幫忙／物資存放／危險區域／集合點」等類別的標註。
+- 任務連動：新增標註時自動建立對應任務（批次寫入，彼此互相連結）。
+- 即時同步：標註與任務透過 Firestore 即時更新，所有使用者同步看到最新狀態。
+- 地區篩選：支援搜尋與常用地區管理，快速聚焦特定區域。
+- 離線支援：Firestore 啟用 IndexedDB 持久化（支援多數瀏覽器）。
 
 ## 技術棧
+- 前端：React + TypeScript
+- 地圖：MapLibre GL
+- 後端（BaaS）：Firebase（Firestore、Auth）
+- 部署：GitHub Pages（示例），可改用 Vercel/Cloudflare
+- CI/CD：GitHub Actions（以 Repository Secrets 生成 .env）
 
-*   **前端框架**: [React](https://reactjs.org/) (使用 Create React App 搭配 TypeScript)
-*   **地圖引擎**: [MapLibre GL JS](https://maplibre.org/)
-*   **地圖圖資**: [OpenStreetMap](https://www.openstreetmap.org/)
-*   **地理編碼服務**: [Nominatim](https://nominatim.openstreetmap.org/) (用於將座標轉換為地址)
-*   **本地端資料庫**: [IndexedDB](https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API) (透過 [Dexie.js](https://dexie.org/) 封裝，簡化操作)
-*   **CI/CD**: [GitHub Actions](https://github.com/features/actions) (自動化建置與部署到 GitHub Pages)
-
-## 專案結構
-
+## 專案結構（精簡）
 ```
-src
-├── lib
-│   └── db.ts          # Dexie.js 資料庫設定與型別定義
-├── pages
-│   ├── MapPage.tsx    # 地圖頁面：核心的地圖、標註、篩選功能
-│   ├── Tasks.tsx      # 任務板頁面：顯示與管理任務列表
-│   └── NeedForm.tsx   # 需求回報頁面：回報需求的表單
-└── ...
+src/
+  App.tsx                # 路由與版面
+  index.tsx              # 入口
+  components/Nav.tsx     # 導覽列
+  pages/
+    MapPage.tsx          # 地圖頁（新增標註／地區篩選／列表顯示）
+    Tasks.tsx            # 任務板（即時訂閱／狀態更新／刪除）
+  contexts/AuthContext.tsx  # Google 登入／登出／使用者狀態
+  services/dataSync.ts   # Firestore 存取與批次操作（subscribe/add/update/delete/createReport）
+  lib/
+    db.ts                # UI 層共用型別（Task/Marker）
+    firebase.ts          # Firebase 初始化與持久化、匯出 collections
+    useLocalStore.ts     # 本地儲存 hook
 ```
 
-## 如何在本地端運行
+## 本機開發
+1. 安裝相依套件
+   ```
+   npm ci
+   ```
+2. 建立環境變數檔（Create React App）
+   在專案根目錄建立 `.env`，內容格式如下：
+   ```
+   REACT_APP_FIREBASE_API_KEY=你的API_KEY
+   REACT_APP_FIREBASE_AUTH_DOMAIN=你的AUTH_DOMAIN
+   REACT_APP_FIREBASE_PROJECT_ID=你的PROJECT_ID
+   REACT_APP_FIREBASE_STORAGE_BUCKET=你的STORAGE_BUCKET
+   REACT_APP_FIREBASE_MESSAGING_SENDER_ID=你的SENDER_ID
+   REACT_APP_FIREBASE_APP_ID=你的APP_ID
+   REACT_APP_FIREBASE_MEASUREMENT_ID=你的MEASUREMENT_ID  # 若有使用 Analytics
+   ```
+3. 啟動開發伺服器
+   ```
+   npm start
+   ```
 
-請確認您的電腦已安裝 [Node.js](https://nodejs.org/) (建議 v18 或以上版本) 和 npm。
+## 部署與 CI（GitHub Actions + GitHub Pages）
+1. 設定 Repository Secrets（GitHub → Settings → Secrets and variables → Actions → New repository secret）
+   逐筆新增：
+   - FIREBASE_API_KEY → 你的 API Key
+   - FIREBASE_AUTH_DOMAIN → 你的 Auth Domain
+   - FIREBASE_PROJECT_ID → 你的 Project ID
+   - FIREBASE_STORAGE_BUCKET → 你的 Storage Bucket
+   - FIREBASE_MESSAGING_SENDER_ID → 你的 Sender ID
+   - FIREBASE_APP_ID → 你的 App ID
+   - FIREBASE_MEASUREMENT_ID → 你的 Measurement ID（若使用）
 
-1.  **複製專案庫**
-    ```bash
-    git clone https://github.com/zenuie/help_hub.git
-    cd help_hub
-    ```
+2. 在 `.github/workflows/deploy.yml` 加入建置與部署流程（重點在 .env 生成步驟）
+   ```
+   name: Build and Deploy
 
-2.  **安裝依賴套件**
-    ```bash
-    npm install
-    ```
-    (若您偏好使用 `npm ci` 進行更嚴格的安裝，也可以使用)
+   on:
+     push:
+       branches:
+         - main
+     workflow_dispatch:
 
-3.  **啟動本地開發伺服器**
-    ```bash
-    npm start
-    ```
+   jobs:
+     build-and-deploy:
+       runs-on: ubuntu-latest
+       steps:
+         - name: Checkout
+           uses: actions/checkout@v4
 
-4.  **開啟瀏覽器**
-    在瀏覽器中開啟 `http://localhost:3000` 即可看到應用程式。
+         - name: Setup Node
+           uses: actions/setup-node@v4
+           with:
+             node-version: '18'
+             cache: 'npm'
 
-## 部署
+         - name: Install deps
+           run: npm ci
 
-此專案已設定好使用 GitHub Actions 自動部署到 GitHub Pages。當有新的 commit 推送到 `main` 分支時，會自動觸發以下流程：
+         - name: Create .env file
+           run: |
+             cat > .env << 'EOF'
+             REACT_APP_FIREBASE_API_KEY=${{ secrets.FIREBASE_API_KEY }}
+             REACT_APP_FIREBASE_AUTH_DOMAIN=${{ secrets.FIREBASE_AUTH_DOMAIN }}
+             REACT_APP_FIREBASE_PROJECT_ID=${{ secrets.FIREBASE_PROJECT_ID }}
+             REACT_APP_FIREBASE_STORAGE_BUCKET=${{ secrets.FIREBASE_STORAGE_BUCKET }}
+             REACT_APP_FIREBASE_MESSAGING_SENDER_ID=${{ secrets.FIREBASE_MESSAGING_SENDER_ID }}
+             REACT_APP_FIREBASE_APP_ID=${{ secrets.FIREBASE_APP_ID }}
+             REACT_APP_FIREBASE_MEASUREMENT_ID=${{ secrets.FIREBASE_MEASUREMENT_ID }}
+             EOF
 
-1.  執行 `npm run build` 建置專案的靜態檔案。
-2.  使用 `peaceiris/actions-gh-pages` action 將 `build` 資料夾的內容推送到 `gh-pages` 分支。
-3.  GitHub Pages 會自動將 `gh-pages` 分支的內容發佈到公開網站。
+         - name: Build
+           run: npm run build
 
-## 未來可改進方向
+         - name: Deploy to GitHub Pages
+           uses: peaceiris/actions-gh-pages@v3
+           with:
+             github_token: ${{ secrets.GITHUB_TOKEN }}
+             publish_dir: ./build
+   ```
 
-- [ ] **即時同步**：透過 WebSocket 或 WebRTC 讓多個使用者之間的地圖標註與任務狀態可以即時同步。
-- [ ] **使用者認證**：加入使用者登入系統，以便追蹤是誰建立的標註與任務。
-- [ ] **PWA 功能強化**：加入 Service Worker，提供更完整的離線體驗與推播通知。
-- [ ] **任務指派**：在任務板中加入指派任務給特定使用者或團隊的功能。
-- [ ] **篩選與排序**：提供更多維度的篩選與排序功能（例如：依據嚴重性、任務狀態、標註類型）。
+3. 注意事項
+   - `.env` 不要提交到版本庫（請確認 `.gitignore` 有忽略）。
+   - 前端環境變數會被打包到瀏覽器端，屬於公開資訊；安全性請以 Firestore Security Rules 落實。
+   - 目前使用 HashRouter，部署到 GitHub Pages 不需額外 404 fallback。若改 BrowserRouter，需處理 404.html 導向。
+   - `App.tsx` 有註冊 `sw.js`。若要保留，請在 `public` 目錄提供最小 Service Worker：
+     ```
+     // public/sw.js
+     self.addEventListener('install', () => self.skipWaiting());
+     self.addEventListener('activate', () => self.clients.claim());
+     self.addEventListener('fetch', () => {});
+     ```
+
+## 開發細節
+- Firestore 資料模型
+  - markers：{ id, type, lat, lng, city, district, fullAddress, creatorId, linkedTaskId, updatedAt(Timestamp) }
+  - tasks：{ id, title, status, lat?, lng?, locationText?, description?, creatorId?, creatorName?, linkedMarkerId?, updatedAt(Timestamp) }
+- 即時訂閱
+  - `subscribeToMarkers` / `subscribeToTasks` 以 `onSnapshot` 監聽資料。
+  - 排序以 `updatedAt.toMillis()` 於 UI 層處理。
+- 批次建立回報
+  - `createReport(markerData, taskData)` 使用 `writeBatch` 同時建立 Marker 與 Task，互相寫入對方的 ID。
+- 經緯度與顯示
+  - Map 預設中心台北；載入資料後會自動 flyTo 最新標註，亦可使用地區篩選快速聚焦。
+  - 標註樣式依中文類別顏色顯示，並顯示地址或座標提示。
+
+## 待辦與建議
+- 強化 Firestore Security Rules：限制未登入使用者的寫入；僅允許作者更新／刪除自己的資料。
+- 逆地理查詢節流與重試：Nominatim API 有速率限制，建議增加節流或快取。
+- PWA 完整化：完善 Service Worker 快取策略與離線頁面。
+- 任務看板：未來可擴充拖拉、指派、留言等功能。
 
 ## 授權
-
-本專案採用 [MIT License](LICENSE)。
+MIT License

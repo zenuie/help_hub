@@ -18,7 +18,6 @@ type RichMarker = FirestoreMarker;
 type NewTaskData = Omit<Task, 'id' | 'updatedAt' | 'linkedMarkerId'>;
 type NewItemForm = { lat: number; lng: number; type: MarkerType; description: string; };
 
-const zhToEn: Record<string, MarkerType> = { '幫忙': 'block', '物資存放位置': 'supply', '危險區域': 'danger', '集合點': 'meeting' };
 const enToZh: Record<MarkerType, string> = { block: '幫忙', supply: '物資存放位置', danger: '危險區域', meeting: '集合點' };
 const zhColor: Record<string, string> = { '幫忙': '#0ea5e9', '物資存放位置': '#10b981', '危險區域': '#ef4444', '集合點': '#f59e0b' };
 
