@@ -17,7 +17,15 @@ export interface Task {
   linkedMarkerId?: string;
 }
 
-export type MarkerType = 'block' | 'supply' | 'meeting' | 'danger';
+export type MarkerType =
+  | 'block'      // 障礙/需幫忙
+  | 'supply'     // 物資點
+  | 'meeting'    // 集合點/避難所
+  | 'danger'     // 危險區域
+  | 'water'      // 供水站/加水站
+  | 'medical'    // 醫療站
+  | 'traffic'    // 交通管制/狀況
+  | 'info';      // 其他資訊點
 
 export interface Marker {
   id: string;
