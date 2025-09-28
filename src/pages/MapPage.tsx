@@ -1,6 +1,5 @@
 // src/pages/MapPage.tsx
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
-// 【核心修正】將 maplibre-gl 的 Map 型別重新命名為 MapLibreMap，以避免與 JS 內建的 Map 衝突
 import maplibregl, { LngLatLike, Map as MapLibreMap } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { useAuth } from '../contexts/AuthContext';
@@ -15,7 +14,6 @@ import {
 import { Task, TaskStatus, MarkerType } from '../lib/db';
 import KMLImporterWithUpload from '../components/KMLImporterWithUpload';
 
-// --- 常數定義 (已更新) ---
 const enToZh: Record<MarkerType, string> = {
   block: '幫忙/障礙',
   supply: '物資站',
@@ -37,7 +35,6 @@ const zhColor: Record<string, string> = {
   '一般資訊': '#6b7280',
 };
 
-// --- 型別定義 ---
 type RichMarker = FirestoreMarker;
 type NewTaskData = Omit<Task, 'id' | 'updatedAt' | 'linkedMarkerId'>;
 type NewItemForm = { lat: number; lng: number; type: MarkerType; description: string; };
@@ -50,13 +47,12 @@ const LAST_PLACE_KEY = 'help_hub:lastPlace';
 const CUSTOM_PLACES_KEY = 'help_hub:customPlaces';
 
 export default function MapPage() {
-    const { user, signInWithGoogle } = useAuth();
+    // 【修正】移除未使用的 signInWithGoogle
+    const { user } = useAuth();
     const [allMarkers, setAllMarkers] = useState<RichMarker[]>([]);
     const [isDataLoading, setIsDataLoading] = useState(true);
     const [vh, setVh] = useState<number>(window.innerHeight);
-    // 【核心修正】使用新的型別別名 MapLibreMap
     const mapRef = useRef<MapLibreMap | null>(null);
-    // 現在這裡的 Map 會被正確地識別為 JavaScript 內建的 Map
     const markerIndexRef = useRef<Map<string, MarkerEntry>>(new Map());
     const [filterOpen, setFilterOpen] = useState<boolean>(false);
     const [selectedPlace, setSelectedPlace] = useState<PlaceOption | null>(null);
@@ -120,9 +116,6 @@ export default function MapPage() {
 
         const clickHandler = (e: maplibregl.MapMouseEvent) => {
             markerIndexRef.current.forEach(entry => entry.popup.remove());
-
-            // 點擊 Marker 的時候也會觸發地圖點擊，我們需要避免這種情況下打開新增表單
-            // 通過檢查事件的 target 是否為地圖畫布本身來判斷
             if (e.originalEvent.target !== map.getCanvas()) return;
 
             const { lat, lng } = e.lngLat;
@@ -142,7 +135,6 @@ export default function MapPage() {
         const map = mapRef.current;
         if (!map || !m.id) return;
         const zhLabel = enToZh[m.type] || '未知類型';
-
         const el = document.createElement('div');
         Object.assign(el.style, {
             width: '22px', height: '22px', borderRadius: '50%', border: '2px solid #fff',

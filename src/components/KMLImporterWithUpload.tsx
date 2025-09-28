@@ -5,7 +5,6 @@ import { kml as kmlToGeoJSON } from 'togeojson';
 import { createReport } from '../services/dataSync';
 import { TaskStatus, MarkerType } from '../lib/db';
 
-
 const enToZh: Record<MarkerType, string> = {
   block: '幫忙/障礙',
   supply: '物資站',
@@ -17,44 +16,22 @@ const enToZh: Record<MarkerType, string> = {
   info: '一般資訊',
 };
 
-/**
- * **升級版：智慧分類函式**
- * 根據 KML Feature 的屬性（名稱、描述、樣式）來猜測其 MarkerType。
- * 新增了對「供水」、「醫療」、「交通」等關鍵字的識別。
- */
 function guessMarkerTypeFromFeature(feature: any): MarkerType {
   const props = feature?.properties || {};
   const name = String(props.name || '').toLowerCase();
   const description = String(props.description || '').toLowerCase();
   const combinedText = `${name} ${description}`;
 
-  // 規則順序很重要，優先匹配更具體的類別
-  if (combinedText.includes('醫療') || combinedText.includes('medical')) {
-    return 'medical';
-  }
-  if (combinedText.includes('加水') || combinedText.includes('供水') || combinedText.includes('water')) {
-    return 'water';
-  }
-  if (combinedText.includes('物資') || combinedText.includes('supply') || combinedText.includes('補給') || combinedText.includes('resource')) {
-    return 'supply';
-  }
-  if (combinedText.includes('交通') || combinedText.includes('塞車') || combinedText.includes('禁止進入') || combinedText.includes('traffic')) {
-    return 'traffic';
-  }
-  if (combinedText.includes('危險') || combinedText.includes('danger') || combinedText.includes('溢流')) {
-    return 'danger';
-  }
-  if (combinedText.includes('集合') || combinedText.includes('避難') || combinedText.includes('住宿') || combinedText.includes('shelter') || combinedText.includes('meeting') || combinedText.includes('休息站')) {
-    return 'meeting';
-  }
-  if (combinedText.includes('志工') || combinedText.includes('人力') || combinedText.includes('幫忙') || combinedText.includes('求助') || combinedText.includes('障礙') || combinedText.includes('廢棄物') || combinedText.includes('block') || combinedText.includes('help')) {
-    return 'block';
-  }
+  if (combinedText.includes('醫療') || combinedText.includes('medical')) return 'medical';
+  if (combinedText.includes('加水') || combinedText.includes('供水') || combinedText.includes('water')) return 'water';
+  if (combinedText.includes('物資') || combinedText.includes('supply') || combinedText.includes('補給') || combinedText.includes('resource')) return 'supply';
+  if (combinedText.includes('交通') || combinedText.includes('塞車') || combinedText.includes('禁止進入') || combinedText.includes('traffic')) return 'traffic';
+  if (combinedText.includes('危險') || combinedText.includes('danger') || combinedText.includes('溢流')) return 'danger';
+  if (combinedText.includes('集合') || combinedText.includes('避難') || combinedText.includes('住宿') || combinedText.includes('shelter') || combinedText.includes('meeting') || combinedText.includes('休息站')) return 'meeting';
+  if (combinedText.includes('志工') || combinedText.includes('人力') || combinedText.includes('幫忙') || combinedText.includes('求助') || combinedText.includes('障礙') || combinedText.includes('廢棄物') || combinedText.includes('block') || combinedText.includes('help')) return 'block';
 
-  // 如果都沒匹配到，回傳 'info' 作為一個通用的預設值
   return 'info';
 }
-
 
 async function reverseGeocodeAdmin(lat: number, lng: number): Promise<{ city?: string; district?: string; fullAddress?: string } | undefined> {
   try {
@@ -161,7 +138,6 @@ export default function KMLImporterWithUpload({
           const name = safeStr(f.properties?.name);
           const description = safeStr(f.properties?.description);
 
-          // 使用升級後的智慧分類函式
           const guessedType = guessMarkerTypeFromFeature(f);
 
           if (i > 0 && throttleMs > 0) {
@@ -252,7 +228,6 @@ export default function KMLImporterWithUpload({
   );
 }
 
-// --------- 工具函式 (保持不變) ---------
 function delay(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
