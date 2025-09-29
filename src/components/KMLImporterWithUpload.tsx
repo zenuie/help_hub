@@ -2,8 +2,9 @@
 import React from 'react';
 import maplibregl, { Map } from 'maplibre-gl';
 import { kml as kmlToGeoJSON } from 'togeojson';
-import { createReport } from '../services/dataSync';
+import { createReport, updateReport } from '../services/dataSync'; // 引入 updateReport
 import { TaskStatus, MarkerType } from '../lib/db';
+import { FirestoreMarker } from '../services/dataSync';
 
 const enToZh: Record<MarkerType, string> = {
   block: '幫忙/障礙',
@@ -16,12 +17,12 @@ const enToZh: Record<MarkerType, string> = {
   info: '一般資訊',
 };
 
+// ... (其他 helper 函式 guessMarkerTypeFromFeature, reverseGeocodeAdmin 保持不變) ...
 function guessMarkerTypeFromFeature(feature: any): MarkerType {
   const props = feature?.properties || {};
   const name = String(props.name || '').toLowerCase();
   const description = String(props.description || '').toLowerCase();
   const combinedText = `${name} ${description}`;
-
   if (combinedText.includes('醫療') || combinedText.includes('medical')) return 'medical';
   if (combinedText.includes('加水') || combinedText.includes('供水') || combinedText.includes('water')) return 'water';
   if (combinedText.includes('物資') || combinedText.includes('supply') || combinedText.includes('補給') || combinedText.includes('resource')) return 'supply';
@@ -29,7 +30,6 @@ function guessMarkerTypeFromFeature(feature: any): MarkerType {
   if (combinedText.includes('危險') || combinedText.includes('danger') || combinedText.includes('溢流')) return 'danger';
   if (combinedText.includes('集合') || combinedText.includes('避難') || combinedText.includes('住宿') || combinedText.includes('shelter') || combinedText.includes('meeting') || combinedText.includes('休息站')) return 'meeting';
   if (combinedText.includes('志工') || combinedText.includes('人力') || combinedText.includes('幫忙') || combinedText.includes('求助') || combinedText.includes('障礙') || combinedText.includes('廢棄物') || combinedText.includes('block') || combinedText.includes('help')) return 'block';
-
   return 'info';
 }
 
@@ -50,12 +50,17 @@ async function reverseGeocodeAdmin(lat: number, lng: number): Promise<{ city?: s
   }
 }
 
+
+// + MODIFIED: 更新 props interface
 interface KMLImporterWithUploadProps {
   mapRef: React.RefObject<Map | null>;
   throttleMs?: number;
   buttonStyle?: React.CSSProperties;
   inputStyle?: React.CSSProperties;
   dedupeByCoordEpsilon?: number;
+  existingMarkers: FirestoreMarker[];
+  onCreateReport: typeof createReport;
+  onUpdateReport: typeof updateReport;
 }
 
 export default function KMLImporterWithUpload({
@@ -63,7 +68,10 @@ export default function KMLImporterWithUpload({
   throttleMs = 250,
   buttonStyle,
   inputStyle,
-  dedupeByCoordEpsilon = 0.00001
+  dedupeByCoordEpsilon = 0.00001,
+  existingMarkers,
+  onCreateReport,
+  onUpdateReport,
 }: KMLImporterWithUploadProps) {
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
   const [isImporting, setIsImporting] = React.useState(false);
@@ -81,38 +89,13 @@ export default function KMLImporterWithUpload({
       const xml = new DOMParser().parseFromString(text, 'text/xml');
       const geojson = kmlToGeoJSON(xml);
 
+      // ... (顯示 KML 圖層在
+      // ... (顯示 KML 圖層在地圖上的程式碼保持不變) ...
       removeExistingKmlSourceAndLayers(map, 'kml-geojson');
       map.addSource('kml-geojson', { type: 'geojson', data: geojson });
-
-      map.addLayer({
-        id: 'kml-points',
-        type: 'circle',
-        source: 'kml-geojson',
-        filter: ['==', ['geometry-type'], 'Point'],
-        paint: {
-          'circle-radius': 6,
-          'circle-color': '#0ea5e9',
-          'circle-stroke-width': 2,
-          'circle-stroke-color': '#ffffff'
-        }
-      } as any);
-
-      map.addLayer({
-        id: 'kml-lines',
-        type: 'line',
-        source: 'kml-geojson',
-        filter: ['==', ['geometry-type'], 'LineString'],
-        paint: { 'line-width': 3, 'line-color': '#ef4444' }
-      } as any);
-
-      map.addLayer({
-        id: 'kml-polygons',
-        type: 'fill',
-        source: 'kml-geojson',
-        filter: ['==', ['geometry-type'], 'Polygon'],
-        paint: { 'fill-color': '#10b981', 'fill-opacity': 0.3 }
-      } as any);
-
+      map.addLayer({ id: 'kml-points', type: 'circle', source: 'kml-geojson', filter: ['==', ['geometry-type'], 'Point'], paint: { 'circle-radius': 6, 'circle-color': '#0ea5e9', 'circle-stroke-width': 2, 'circle-stroke-color': '#ffffff' } } as any);
+      map.addLayer({ id: 'kml-lines', type: 'line', source: 'kml-geojson', filter: ['==', ['geometry-type'], 'LineString'], paint: { 'line-width': 3, 'line-color': '#ef4444' } } as any);
+      map.addLayer({ id: 'kml-polygons', type: 'fill', source: 'kml-geojson', filter: ['==', ['geometry-type'], 'Polygon'], paint: { 'fill-color': '#10b981', 'fill-opacity': 0.3 } } as any);
       const bbox = getGeoJSONBounds(geojson);
       if (bbox) map.fitBounds(bbox, { padding: 16 });
 
@@ -124,8 +107,8 @@ export default function KMLImporterWithUpload({
 
       const uniquePoints = dedupeByEpsilon(points, dedupeByCoordEpsilon);
 
-      let success = 0;
-      let failed = 0;
+      // + MODIFIED: 初始化新的計數器
+      let created = 0, updated = 0, skipped = 0, failed = 0;
 
       for (let i = 0; i < uniquePoints.length; i++) {
         const f = uniquePoints[i];
@@ -135,48 +118,68 @@ export default function KMLImporterWithUpload({
             failed++;
             continue;
           }
+
           const name = safeStr(f.properties?.name);
           const description = safeStr(f.properties?.description);
-
           const guessedType = guessMarkerTypeFromFeature(f);
 
-          if (i > 0 && throttleMs > 0) {
-            await delay(throttleMs);
-          }
+          // + MODIFIED: 核心比對邏輯
+          const existingMarker = existingMarkers.find(m =>
+            Math.abs(m.lat - lat) < dedupeByCoordEpsilon &&
+            Math.abs(m.lng - lng) < dedupeByCoordEpsilon
+          );
+
+          if (i > 0 && throttleMs > 0) await delay(throttleMs);
 
           const admin = await reverseGeocodeAdmin(lat, lng);
 
-          const markerData = {
+          // 準備通用的 marker 和 task 資料
+          const commonMarkerData = {
             type: guessedType,
-            lat,
-            lng,
+            title: name || `${enToZh[guessedType]}`,
+            description: description || '',
             city: admin?.city || '',
             district: admin?.district || '',
             fullAddress: admin?.fullAddress || name || '',
-            creatorId: null
           };
 
-          const title = name || `${enToZh[guessedType]}：${admin?.district || '未知區域'}`;
-          const taskData = {
-            title,
-            status: 'todo' as TaskStatus,
-            lat,
-            lng,
+          const commonTaskData = {
+            title: name || `${enToZh[guessedType]}：${admin?.district || '未知區域'}`,
             locationText: admin?.fullAddress || name || `座標: ${formatCoord(lat, lng)}`,
             description: description || `來自 KML 匯入的點位。`,
-            creatorId: null,
-            creatorName: 'KML 匯入'
           };
 
-          await createReport(markerData, taskData);
-          success++;
+          if (existingMarker) {
+            // --- 更新或略過邏輯 ---
+            const isIdentical = (existingMarker.title === commonMarkerData.title) && (existingMarker.description === commonMarkerData.description);
+
+            if (isIdentical) {
+              skipped++;
+              continue;
+            } else {
+              if (!existingMarker.id || !existingMarker.linkedTaskId) {
+                console.warn('找到匹配的 Marker，但其缺少 ID 或 linkedTaskId，略過更新', existingMarker);
+                failed++;
+                continue;
+              }
+              await onUpdateReport(existingMarker.id, existingMarker.linkedTaskId, commonMarkerData, commonTaskData);
+              updated++;
+            }
+          } else {
+            // --- 新增邏輯 ---
+            const newMarkerData = { ...commonMarkerData, lat, lng, creatorId: null };
+            const newTaskData = { ...commonTaskData, lat, lng, status: 'todo' as TaskStatus, creatorId: null, creatorName: 'KML 匯入' };
+            await onCreateReport(newMarkerData, newTaskData);
+            created++;
+          }
         } catch (e) {
           console.error('匯入單筆失敗', e);
           failed++;
         }
       }
 
-      alert(`KML 匯入完成：成功 ${success} 筆；失敗 ${failed} 筆。資料已同步到清單與地圖。`);
+      // + MODIFIED: 顯示更詳細的結果
+      alert(`KML 匯入完成：\n- 新增: ${created} 筆\n- 更新: ${updated} 筆\n- 略過 (無變動): ${skipped} 筆\n- 失敗: ${failed} 筆\n\n資料已同步到清單與地圖。`);
       if (fileInputRef.current) fileInputRef.current.value = '';
     } catch (e) {
       console.error('KML 轉換或匯入失敗', e);
@@ -205,7 +208,7 @@ export default function KMLImporterWithUpload({
       <input
         ref={fileInputRef}
         type="file"
-        accept=".kml"
+        accept=".kml,.kmz" // 接受 kmz
         onChange={onFileChange}
         style={{ display: 'none', ...inputStyle }}
       />
@@ -222,16 +225,16 @@ export default function KMLImporterWithUpload({
           ...buttonStyle
         }}
       >
-        {isImporting ? '匯入中…' : '匯入 KML 並寫入'}
+        {isImporting ? '匯入中…' : '匯入 KML 並同步'}
       </button>
     </div>
   );
 }
 
+// ... (其他 helper 函式 delay, getGeoJSONBounds, dedupeByEpsilon, safeStr, formatCoord 保持不變) ...
 function delay(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
-
 function getGeoJSONBounds(fc: any): maplibregl.LngLatBoundsLike | null {
   try {
     const coords: [number, number][] = [];
@@ -269,7 +272,6 @@ function getGeoJSONBounds(fc: any): maplibregl.LngLatBoundsLike | null {
     return null;
   }
 }
-
 function dedupeByEpsilon(points: any[], eps: number): any[] {
   const seen: [number, number][] = [];
   const out: any[] = [];
@@ -284,12 +286,10 @@ function dedupeByEpsilon(points: any[], eps: number): any[] {
   }
   return out;
 }
-
-function safeStr(v: any): string | undefined {
+function safeStr(v: any): string {
   const s = typeof v === 'string' ? v.trim() : '';
-  return s || undefined;
+  return s || ''; // 返回空字符串而不是 undefined
 }
-
 function formatCoord(lat: number, lng: number) {
   return `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
 }

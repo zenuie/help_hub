@@ -32,7 +32,9 @@ export interface Marker {
   type: MarkerType;
   lat: number;
   lng: number;
-  updatedAt: number; // 在 UI 層，我們處理轉換後的數字
+  updatedAt: number;
+  title?: string;
+  description?: string;
   city?: string;
   district?: string;
   fullAddress?: string;

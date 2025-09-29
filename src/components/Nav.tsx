@@ -1,38 +1,41 @@
 // src/components/Nav.tsx
 import React from 'react';
-import { NavLink } from 'react-router-dom';
+import {NavLink} from 'react-router-dom';
 import './Nav.css'; // 引入我們設計的 CSS 樣式
 
 export default function Nav() {
-  return (
-    <nav className="app-nav">
-      <div className="nav-title">
-        Help Hub
-      </div>
-      <div className="nav-links">
-        {/*
-          使用 NavLink 元件，它能自動判斷是否為啟用狀態。
-          - `end` 屬性確保只有在路徑完全匹配 "/" 時，"地圖" 連結才會被標記為 active。
-          - ({ isActive }) => ... 是一個函式，可以根據啟用狀態動態添加 className。
-        */}
-        <NavLink
-          to="/"
-          end
-          className={({ isActive }) =>
-            isActive ? 'nav-link active' : 'nav-link'
-          }
-        >
-          地圖
-        </NavLink>
-        <NavLink
-          to="/tasks"
-          className={({ isActive }) =>
-            isActive ? 'nav-link active' : 'nav-link'
-          }
-        >
-          任務板
-        </NavLink>
-      </div>
-    </nav>
-  );
+    return (
+        <nav className="app-nav">
+            <div className="nav-title">
+                Help Hub
+            </div>
+            <div className="nav-links">
+                <a
+                    href="https://sites.google.com/view/guangfu250923/home?authuser=0"
+                    className="nav-link" // 沿用現有的樣式，讓它看起來一致
+                    target="_blank"      // 確保在新分頁中開啟，不會離開您的應用程式
+                    rel="noopener noreferrer" // 增加安全性
+                >
+                    主站
+                </a>
+                <NavLink
+                    to="/"
+                    end
+                    className={({isActive}) =>
+                        isActive ? 'nav-link active' : 'nav-link'
+                    }
+                >
+                    地圖
+                </NavLink>
+                <NavLink
+                    to="/tasks"
+                    className={({isActive}) =>
+                        isActive ? 'nav-link active' : 'nav-link'
+                    }
+                >
+                    任務板
+                </NavLink>
+            </div>
+        </nav>
+    );
 }

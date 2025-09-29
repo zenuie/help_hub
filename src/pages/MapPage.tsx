@@ -8,6 +8,7 @@ import {
   deleteMarker,
   updateMarker,
   createReport,
+  updateReport, // + 新增 import
   addTask,
   FirestoreMarker,
 } from '../services/dataSync';
@@ -47,7 +48,6 @@ const LAST_PLACE_KEY = 'help_hub:lastPlace';
 const CUSTOM_PLACES_KEY = 'help_hub:customPlaces';
 
 export default function MapPage() {
-    // 【修正】移除未使用的 signInWithGoogle
     const { user } = useAuth();
     const [allMarkers, setAllMarkers] = useState<RichMarker[]>([]);
     const [isDataLoading, setIsDataLoading] = useState(true);
@@ -141,12 +141,24 @@ export default function MapPage() {
             boxShadow: '0 1px 6px rgba(0,0,0,0.3)', background: zhColor[zhLabel] || '#6b7280', cursor: 'pointer'
         });
 
+        const googleMapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${m.lat},${m.lng}`;
+        const appleMapsUrl = `https://maps.apple.com/?daddr=${m.lat},${m.lng}`;
+
+        const descriptionHtml = m.description
+            ? `<p style="margin: 4px 0; background: #f9f9f9; border-left: 2px solid #ddd; padding: 4px 6px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; text-overflow: ellipsis; white-space: normal;" title="${m.description}">${m.description}</p>`
+            : '';
+
         const popupContent = `
             <div style="font-family: sans-serif; font-size: 14px; max-width: 240px; word-wrap: break-word;">
-                <strong style="color: ${zhColor[zhLabel]};">${zhLabel}</strong>
+                <strong style="color: ${zhColor[zhLabel]}; display: block; margin-bottom: 4px;">${m.title || zhLabel}</strong>
+                ${descriptionHtml}
                 <p style="margin: 4px 0;">${m.fullAddress || formatAdmin(m.city, m.district)}</p>
                 <p style="margin: 4px 0; color: #666; font-size: 12px;">座標: ${formatCoord(m.lat, m.lng)}</p>
                 ${m.linkedTaskId ? `<p style="margin: 4px 0; font-size: 12px; color: #10b981;">已轉為任務</p>` : ''}
+                <div style="margin-top: 10px; padding-top: 8px; border-top: 1px solid #eee; display: flex; gap: 8px;">
+                    <a href="${googleMapsUrl}" target="_blank" rel="noopener noreferrer" style="text-decoration: none; padding: 4px 10px; background-color: #4285F4; color: white; border-radius: 4px; font-size: 12px;">Google 導航</a>
+                    <a href="${appleMapsUrl}" target="_blank" rel="noopener noreferrer" style="text-decoration: none; padding: 4px 10px; background-color: #f0f0f0; color: black; border-radius: 4px; font-size: 12px; border: 1px solid #ccc;">Apple 導航</a>
+                </div>
             </div>
         `;
         const popup = new maplibregl.Popup({ offset: 25 }).setHTML(popupContent);
@@ -181,12 +193,25 @@ export default function MapPage() {
                 const entry = markerIndex.get(markerData.id)!;
                 entry.data = markerData;
                 const zhLabel = enToZh[markerData.type] || '未知類型';
+
+                const googleMapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${markerData.lat},${markerData.lng}`;
+                const appleMapsUrl = `https://maps.apple.com/?daddr=${markerData.lat},${markerData.lng}`;
+
+                const descriptionHtml = markerData.description
+                    ? `<p style="margin: 4px 0; background: #f9f9f9; border-left: 2px solid #ddd; padding: 4px 6px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; text-overflow: ellipsis; white-space: normal;" title="${markerData.description}">${markerData.description}</p>`
+                    : '';
+
                 const newPopupContent = `
                     <div style="font-family: sans-serif; font-size: 14px; max-width: 240px; word-wrap: break-word;">
-                        <strong style="color: ${zhColor[zhLabel]};">${zhLabel}</strong>
+                        <strong style="color: ${zhColor[zhLabel]}; display: block; margin-bottom: 4px;">${markerData.title || zhLabel}</strong>
+                        ${descriptionHtml}
                         <p style="margin: 4px 0;">${markerData.fullAddress || formatAdmin(markerData.city, markerData.district)}</p>
                         <p style="margin: 4px 0; color: #666; font-size: 12px;">座標: ${formatCoord(markerData.lat, markerData.lng)}</p>
                         ${markerData.linkedTaskId ? `<p style="margin: 4px 0; font-size: 12px; color: #10b981;">已轉為任務</p>` : ''}
+                        <div style="margin-top: 10px; padding-top: 8px; border-top: 1px solid #eee; display: flex; gap: 8px;">
+                            <a href="${googleMapsUrl}" target="_blank" rel="noopener noreferrer" style="text-decoration: none; padding: 4px 10px; background-color: #4285F4; color: white; border-radius: 4px; font-size: 12px;">Google 導航</a>
+                            <a href="${appleMapsUrl}" target="_blank" rel="noopener noreferrer" style="text-decoration: none; padding: 4px 10px; background-color: #f0f0f0; color: black; border-radius: 4px; font-size: 12px; border: 1px solid #ccc;">Apple 導航</a>
+                        </div>
                     </div>
                 `;
                 entry.popup.setHTML(newPopupContent);
@@ -221,6 +246,8 @@ export default function MapPage() {
         const markerData = {
             type: form.type,
             lat: form.lat, lng: form.lng,
+            title: title,
+            description: form.description,
             city: geoInfo?.city || '', district: geoInfo?.district || '', fullAddress: geoInfo?.fullAddress || '',
             creatorId: user?.uid || null,
         };
@@ -255,11 +282,11 @@ export default function MapPage() {
         if (marker.linkedTaskId) { alert(`此標註已轉為任務。`); return; }
         const zhLabel = enToZh[marker.type];
         const fullAddress = marker.fullAddress || formatAdmin(marker.city, marker.district);
-        const title = `處理：${zhLabel} @ ${fullAddress}`;
+        const title = marker.title || `處理：${zhLabel} @ ${fullAddress}`;
         const taskData = {
             title, status: 'todo' as TaskStatus, lat: marker.lat, lng: marker.lng,
             locationText: fullAddress || formatCoord(marker.lat, marker.lng),
-            description: `來自地圖標註：${zhLabel}。`,
+            description: marker.description || `來自地圖標註：${zhLabel}。`,
         };
         try {
             const taskRef = await addTask({
@@ -309,7 +336,13 @@ export default function MapPage() {
             {isModalOpen && (<div style={modalOverlayStyle}><div style={modalContentStyle}><h2>新增標註點</h2><p style={{ fontSize: 14, color: '#666', marginTop: 0 }}>座標: {newItemForm.lat?.toFixed(5)}, {newItemForm.lng?.toFixed(5)}</p><label>類別：</label><select value={newItemForm.type} onChange={e => setNewItemForm(p => ({ ...p, type: e.target.value as MarkerType }))} style={{ width: '100%', padding: 8, fontSize: 16 }}>{Object.entries(enToZh).map(([en, zh])=><option key={en} value={en}>{zh}</option>)}</select><label style={{ marginTop: 12 }}>簡要描述：</label><textarea value={newItemForm.description ?? ''} onChange={e => setNewItemForm(p => ({ ...p, description: e.target.value }))} style={{ width: 'calc(100% - 18px)', minHeight: 80, padding: 8, fontSize: 16 }} placeholder="請簡要描述情況，這將成為任務內容..." /><div style={{ marginTop: 20, display: 'flex', justifyContent: 'flex-end', gap: 12 }}><button onClick={() => setIsModalOpen(false)} style={{ background: '#eee', border: '1px solid #ccc', padding: '8px 16px', borderRadius: 6, cursor: 'pointer' }}>取消</button><button onClick={handleFormSubmit} style={{ background: '#10b981', color: 'white', border: '1px solid #059669', fontWeight: 'bold', padding: '8px 16px', borderRadius: 6, cursor: 'pointer' }}>提交</button></div></div></div>)}
 
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
-                <KMLImporterWithUpload mapRef={mapRef} />
+                {/* + MODIFIED: 傳入新的 props */}
+                <KMLImporterWithUpload
+                  mapRef={mapRef}
+                  existingMarkers={allMarkers}
+                  onCreateReport={createReport}
+                  onUpdateReport={updateReport}
+                />
             </div>
 
             <div style={{ marginTop: 8 }}><button onClick={() => setFilterOpen(v => !v)} style={filterToggleStyle}>{filterOpen ? '收合地區篩選 ▲' : '展開地區篩選 ▼'}</button>{filterOpen && (<div style={filterPanelStyle}><div style={{ display: 'flex', gap: 8 }}><input value={searchInput} onChange={e => setSearchInput(e.target.value)} placeholder="輸入鄉鎮市區，如：光復鄉" style={searchInputStyle} /><button onClick={() => searchPlace(searchInput)} disabled={isSearching} style={searchBtnStyle}>{isSearching ? '搜尋中…' : '搜尋'}</button></div>{searchResults.length > 0 && (<ul style={{ marginTop: 8, display: 'grid', gap: 8, maxHeight: 240, overflow: 'auto', padding: 0, listStyle: 'none' }}>{searchResults.map((r, idx) => <li key={idx}><button onClick={() => onPickSearchResult(r)} style={bigListBtnStyle}>{r.label}</button></li>)}</ul>)}{customPlaces.length > 0 && (<><div style={{ fontWeight: 600, marginTop: 12, marginBottom: 6 }}>常用地區</div><ul style={{ display: 'grid', gap: 8, padding: 0, listStyle: 'none' }}>{customPlaces.map(p => (<li key={p.id || p.label}><div style={{ display: 'flex', gap: 8 }}><button onClick={() => { applyPlace(p); saveLastPlace(p); }} style={bigListBtnStyle}>{p.label}</button><button onClick={() => removeCustom(p.id)} style={{ ...bigListBtnStyle, width: 'auto', flexShrink: 0 }}>刪除</button></div></li>))}</ul></>)}<div style={{ marginTop: 8 }}><button onClick={clearFilter} style={searchBtnStyle}>清除篩選</button></div></div>)}</div>
